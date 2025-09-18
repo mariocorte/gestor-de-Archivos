@@ -64,7 +64,11 @@ def index():
             "s3_prefix": defaults.s3_prefix,
             "aws_region": defaults.aws_region or "",
             "delete_remote_after_upload": defaults.delete_remote_after_upload,
-            "allowed_extensions": ", ".join(defaults.allowed_extensions or []),
+            "allowed_extensions": (
+                "*"
+                if defaults.allowed_extensions is None
+                else ", ".join(defaults.allowed_extensions)
+            ),
             "dry_run": False,
             "list_only": False,
         },
@@ -76,7 +80,14 @@ def index():
     if request.method == "POST":
         form = request.form
         encodings = _split_csv(form.get("sftp_encodings", "utf-8,latin-1,cp1252"))
-        allowed_exts = _split_csv(form.get("allowed_extensions", ""))
+        allowed_raw = form.get("allowed_extensions", "")
+        allowed_exts = _split_csv(allowed_raw)
+        if allowed_raw.strip() == "*":
+            allowed_for_config = None
+        elif allowed_exts:
+            allowed_for_config = allowed_exts
+        else:
+            allowed_for_config = defaults.allowed_extensions
         config = SyncConfig(
             sftp_host=form.get("sftp_host", "").strip(),
             sftp_port=int(form.get("sftp_port", defaults.sftp_port) or defaults.sftp_port),
@@ -92,7 +103,7 @@ def index():
             delete_remote_after_upload=_parse_bool(
                 form.get("delete_remote_after_upload")
             ),
-            allowed_extensions=allowed_exts or None,
+            allowed_extensions=allowed_for_config,
         )
         options = SyncOptions(
             dry_run=_parse_bool(form.get("dry_run")),
@@ -125,7 +136,11 @@ def index():
                 "s3_prefix": config.s3_prefix,
                 "aws_region": config.aws_region or "",
                 "delete_remote_after_upload": config.delete_remote_after_upload,
-                "allowed_extensions": ", ".join(config.allowed_extensions or []),
+                "allowed_extensions": (
+                    "*"
+                    if config.allowed_extensions is None
+                    else ", ".join(config.allowed_extensions)
+                ),
                 "dry_run": options.dry_run,
                 "list_only": options.list_only,
             })

@@ -38,7 +38,7 @@ Variables principales:
 - `S3_PREFIX`: prefijo (carpeta lógica) dentro del bucket.
 - `AWS_REGION`: región de AWS (opcional).
 - `DELETE_REMOTE_AFTER_UPLOAD`: `true/false` para eliminar el archivo remoto tras subirlo.
-- `ALLOWED_EXTENSIONS`: lista separada por comas con extensiones permitidas (por ejemplo `mp4,mov`).
+- `ALLOWED_EXTENSIONS`: lista separada por comas con extensiones permitidas (por ejemplo `webm` o `mp4,mov`). Por defecto solo se procesan archivos `.webm`. Usa `*` para aceptar cualquier extensión.
 
 ## Uso por línea de comandos
 
