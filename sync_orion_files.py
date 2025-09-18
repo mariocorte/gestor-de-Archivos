@@ -16,6 +16,7 @@ import os
 import posixpath
 import stat
 import sys
+from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
@@ -235,6 +236,9 @@ def _collect_remote_files(
 
     files: List[RemoteFile] = []
 
+    today = datetime.now().date()
+    required_prefix = "38332"
+
     def _walk(current_path: str) -> None:
         entries: List[SFTPAttributes] = sftp.listdir_attr(current_path)
         for attr in entries:
@@ -246,6 +250,11 @@ def _collect_remote_files(
                 _walk(full_path)
                 continue
             if allowed and posixpath.splitext(name)[1].lower() not in allowed:
+                continue
+            if not name.startswith(required_prefix):
+                continue
+            modified_date = datetime.fromtimestamp(attr.st_mtime).date()
+            if modified_date != today:
                 continue
             files.append(
                 RemoteFile(path=full_path, size=attr.st_size, mtime=attr.st_mtime)
