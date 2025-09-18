@@ -51,7 +51,9 @@ class SyncConfig:
     s3_prefix: str = ""
     aws_region: Optional[str] = None
     delete_remote_after_upload: bool = False
-    allowed_extensions: Optional[Sequence[str]] = None
+    allowed_extensions: Optional[Sequence[str]] = field(
+        default_factory=lambda: (".webm",)
+    )
 
     def normalized_prefix(self) -> str:
         prefix = self.s3_prefix.strip("/")
@@ -271,7 +273,7 @@ def _list_remote_with_fallback(
                 encoding,
             )
             return sftp, files, encoding
-        except UnicodeDecodeError as exc:
+        except UnicodeError as exc:
             logger.warning(
                 "Fallo al decodificar nombres de archivo con la codificación '%s'.",
                 encoding,
@@ -438,10 +440,18 @@ def _load_env_file(env_file: Optional[str]) -> None:
 
 def config_from_env() -> SyncConfig:
     def _split(value: Optional[str]) -> Optional[List[str]]:
-        if not value:
+        if value is None:
             return None
+        stripped = value.strip()
+        if not stripped:
+            return None
+        if stripped == "*":
+            return []
         parts = [item.strip() for item in value.split(",")]
-        return [item for item in parts if item]
+        filtered = [item for item in parts if item]
+        return filtered or None
+
+    allowed = _split(os.environ.get("ALLOWED_EXTENSIONS"))
 
     return SyncConfig(
         sftp_host=os.environ.get("SFTP_HOST", ""),
@@ -459,7 +469,7 @@ def config_from_env() -> SyncConfig:
         delete_remote_after_upload=
             os.environ.get("DELETE_REMOTE_AFTER_UPLOAD", "false").lower()
             in {"1", "true", "yes", "on"},
-        allowed_extensions=_split(os.environ.get("ALLOWED_EXTENSIONS")),
+        allowed_extensions=None if allowed == [] else allowed or (".webm",),
     )
 
 
