@@ -23,7 +23,16 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
 import paramiko
 from paramiko.client import SSHClient
+from paramiko.common import DEBUG
 from paramiko.sftp_attr import SFTPAttributes
+from paramiko.sftp_client import (
+    CMD_CLOSE,
+    CMD_HANDLE,
+    CMD_NAME,
+    CMD_OPENDIR,
+    CMD_READDIR,
+    SFTPError,
+)
 
 try:
     from dotenv import load_dotenv
@@ -156,7 +165,45 @@ def _create_sftp_client(
     transport = ssh_client.get_transport()
     if transport is None:  # pragma: no cover
         raise SyncError("No se pudo obtener el transporte SSH")
-    return paramiko.SFTPClient.from_transport(transport, encoding=encoding)
+    try:
+        # Paramiko >= 3.4 acepta ``encoding`` directamente.
+        return paramiko.SFTPClient.from_transport(transport, encoding=encoding)
+    except TypeError:
+        # Versiones anteriores no soportan el parámetro ``encoding``.
+        return paramiko.SFTPClient.from_transport(transport)
+
+
+def _listdir_attr_with_encoding(
+    sftp: paramiko.SFTPClient, path: str, encoding: str
+) -> List[SFTPAttributes]:
+    path_bytes = path.encode(encoding) if isinstance(path, str) else path
+    adjusted = sftp._adjust_cwd(path_bytes)
+    sftp._log(DEBUG, "listdir({!r})".format(adjusted))
+    t, msg = sftp._request(CMD_OPENDIR, adjusted)
+    if t != CMD_HANDLE:
+        raise SFTPError("Expected handle")
+    handle = msg.get_binary()
+    filelist: List[SFTPAttributes] = []
+    try:
+        while True:
+            try:
+                t, msg = sftp._request(CMD_READDIR, handle)
+            except EOFError:
+                break
+            if t != CMD_NAME:
+                raise SFTPError("Expected name response")
+            count = msg.get_int()
+            for _ in range(count):
+                filename_bytes = msg.get_string()
+                longname_bytes = msg.get_string()
+                filename = filename_bytes.decode(encoding)
+                longname = longname_bytes.decode(encoding, errors="replace")
+                attr = SFTPAttributes._from_msg(msg, filename, longname)
+                if filename not in (".", ".."):
+                    filelist.append(attr)
+    finally:
+        sftp._request(CMD_CLOSE, handle)
+    return filelist
 
 
 def _iter_encodings(config: SyncConfig) -> Iterator[str]:
@@ -175,7 +222,10 @@ def _iter_encodings(config: SyncConfig) -> Iterator[str]:
 
 
 def _collect_remote_files(
-    sftp: paramiko.SFTPClient, base_path: str, allowed_exts: Optional[Sequence[str]]
+    sftp: paramiko.SFTPClient,
+    base_path: str,
+    allowed_exts: Optional[Sequence[str]],
+    encoding: str,
 ) -> List[RemoteFile]:
     allowed = None
     if allowed_exts:
@@ -188,7 +238,7 @@ def _collect_remote_files(
     files: List[RemoteFile] = []
 
     def _walk(current_path: str) -> None:
-        entries: List[SFTPAttributes] = sftp.listdir_attr(current_path)
+        entries = _listdir_attr_with_encoding(sftp, current_path, encoding)
         for attr in entries:
             name = attr.filename
             if name in (".", ".."):
@@ -219,7 +269,7 @@ def _list_remote_with_fallback(
         sftp = _create_sftp_client(ssh_client, encoding)
         try:
             files = _collect_remote_files(
-                sftp, base_path, config.allowed_extensions
+                sftp, base_path, config.allowed_extensions, encoding
             )
             logger.info(
                 "Se detectaron %d archivos remotos (codificación '%s')",
@@ -268,6 +318,10 @@ def _remote_to_s3_key(remote: RemoteFile, base_path: str, prefix: str) -> str:
     if prefix:
         key = f"{prefix}/{key}"
     return key
+
+
+def _encode_remote_path(path: str, encoding: str) -> bytes:
+    return path.encode(encoding)
 
 
 def run_sync(config: SyncConfig, options: Optional[SyncOptions] = None) -> SyncSummary:
@@ -342,11 +396,12 @@ def run_sync(config: SyncConfig, options: Optional[SyncOptions] = None) -> SyncS
                     logger.info("[DRY-RUN] Se subiría '%s'", key)
                     continue
                 logger.info("Subiendo '%s' a s3://%s", key, config.s3_bucket)
-                with sftp.file(remote.path, "rb") as remote_fp:
+                remote_path_bytes = _encode_remote_path(remote.path, encoding)
+                with sftp.file(remote_path_bytes, "rb") as remote_fp:
                     s3_client.upload_fileobj(remote_fp, config.s3_bucket, key)
                 uploaded += 1
                 if config.delete_remote_after_upload:
-                    sftp.remove(remote.path)
+                    sftp.remove(remote_path_bytes)
                     deleted += 1
                     logger.info("Archivo remoto '%s' eliminado tras la carga", remote.path)
     finally:
