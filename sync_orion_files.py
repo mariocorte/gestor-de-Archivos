@@ -328,9 +328,6 @@ def _collect_remote_files(
 
     files: List[RemoteFile] = []
 
-    today = datetime.now().date()
-    required_prefix = "38332"
-
     def _walk(current_path: str) -> None:
         try:
             entries = sftp.listdir_attr(current_path)
@@ -349,11 +346,6 @@ def _collect_remote_files(
                 _walk(full_path)
                 continue
             if allowed and posixpath.splitext(name)[1].lower() not in allowed:
-                continue
-            if not name.startswith(required_prefix):
-                continue
-            modified_date = datetime.fromtimestamp(attr.st_mtime).date()
-            if modified_date != today:
                 continue
             files.append(
                 RemoteFile(path=full_path, size=attr.st_size, mtime=attr.st_mtime)
