@@ -1,0 +1,140 @@
+:root {
+  --bg-color: #f2f4f8;
+  --card-bg: #ffffff;
+  --accent: #006ad4;
+  --text-color: #1f2933;
+  --muted: #52606d;
+  --error-bg: #ffe0e0;
+  --error-border: #c53030;
+  --success-bg: #e6fffa;
+  font-family: "Segoe UI", Roboto, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-color);
+  color: var(--text-color);
+}
+
+.container {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem 3rem;
+}
+
+h1 {
+  margin-top: 0;
+  font-size: 2rem;
+}
+
+.intro {
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.card {
+  background: var(--card-bg);
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: 0 10px 25px rgba(15, 23, 42, 0.1);
+  margin-bottom: 1.5rem;
+}
+
+.card h2 {
+  margin-top: 0;
+  font-size: 1.25rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 1rem;
+}
+
+.field label {
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+.field input[type="text"],
+.field input[type="password"],
+.field input[type="number"] {
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #cbd2d9;
+  border-radius: 8px;
+  font-size: 1rem;
+  transition: border-color 0.2s ease;
+}
+
+.field input:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(0, 106, 212, 0.15);
+}
+
+.field .hint {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-top: 0.35rem;
+}
+
+.field.checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.field.checkbox input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+.actions {
+  text-align: right;
+}
+
+.actions button {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  padding: 0.8rem 1.6rem;
+  font-size: 1rem;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.actions button:hover {
+  background: #0053a4;
+}
+
+.card.error {
+  border: 1px solid var(--error-border);
+  background: var(--error-bg);
+}
+
+.card.logs pre {
+  background: #0b1f33;
+  color: #f8fafc;
+  padding: 1rem;
+  border-radius: 10px;
+  max-height: 400px;
+  overflow: auto;
+  font-family: "Fira Mono", Menlo, monospace;
+}
+
+@media (max-width: 640px) {
+  .container {
+    padding: 1.5rem 1rem 2.5rem;
+  }
+
+  .card {
+    padding: 1.25rem;
+  }
+}
