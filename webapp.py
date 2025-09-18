@@ -63,6 +63,9 @@ def index():
             "s3_bucket": defaults.s3_bucket,
             "s3_prefix": defaults.s3_prefix,
             "aws_region": defaults.aws_region or "",
+            "s3_endpoint_url": defaults.s3_endpoint_url or "",
+            "aws_access_key_id": defaults.aws_access_key_id or "",
+            "aws_secret_access_key": "",
             "delete_remote_after_upload": defaults.delete_remote_after_upload,
             "allowed_extensions": ", ".join(defaults.allowed_extensions or []),
             "dry_run": False,
@@ -89,6 +92,18 @@ def index():
             s3_bucket=form.get("s3_bucket", "").strip(),
             s3_prefix=form.get("s3_prefix", "").strip(),
             aws_region=form.get("aws_region") or None,
+            s3_endpoint_url=(
+                (form.get("s3_endpoint_url") or "").strip()
+                or defaults.s3_endpoint_url
+            ),
+            aws_access_key_id=(
+                (form.get("aws_access_key_id") or "").strip()
+                or defaults.aws_access_key_id
+            ),
+            aws_secret_access_key=(
+                (form.get("aws_secret_access_key") or "").strip()
+                or defaults.aws_secret_access_key
+            ),
             delete_remote_after_upload=_parse_bool(
                 form.get("delete_remote_after_upload")
             ),
@@ -124,6 +139,9 @@ def index():
                 "s3_bucket": config.s3_bucket,
                 "s3_prefix": config.s3_prefix,
                 "aws_region": config.aws_region or "",
+                "s3_endpoint_url": config.s3_endpoint_url or "",
+                "aws_access_key_id": config.aws_access_key_id or "",
+                "aws_secret_access_key": "",
                 "delete_remote_after_upload": config.delete_remote_after_upload,
                 "allowed_extensions": ", ".join(config.allowed_extensions or []),
                 "dry_run": options.dry_run,

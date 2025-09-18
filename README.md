@@ -37,8 +37,14 @@ Variables principales:
 - `S3_BUCKET`: bucket de destino.
 - `S3_PREFIX`: prefijo (carpeta lógica) dentro del bucket.
 - `AWS_REGION`: región de AWS (opcional).
+- `AWS_ACCESS_KEY_ID` (`ACCESS_KEY`): credencial de acceso para S3.
+- `AWS_SECRET_ACCESS_KEY` (`SECRET_KEY`): clave secreta asociada.
+- `S3_ENDPOINT_URL` (`ENDPOINT_URL`): endpoint personalizado para servicios S3 compatibles.
 - `DELETE_REMOTE_AFTER_UPLOAD`: `true/false` para eliminar el archivo remoto tras subirlo.
 - `ALLOWED_EXTENSIONS`: lista separada por comas con extensiones permitidas (por ejemplo `mp4,mov`).
+
+> También puedes usar las variables `BUCKET_NAME` y `DESTINO_DEF` como alias de
+> `S3_BUCKET` y `S3_PREFIX`, respectivamente.
 
 ## Uso por línea de comandos
 

@@ -71,6 +71,20 @@
             <input type="text" id="aws_region" name="aws_region" value="{{ form.aws_region }}" placeholder="us-east-1">
           </div>
           <div class="field">
+            <label for="s3_endpoint_url">Endpoint personalizado</label>
+            <input type="text" id="s3_endpoint_url" name="s3_endpoint_url" value="{{ form.s3_endpoint_url }}" placeholder="http://dc-s3.justiciasalta.gov.ar">
+            <p class="hint">Úsalo para servicios compatibles con S3 que no sean AWS.</p>
+          </div>
+          <div class="field">
+            <label for="aws_access_key_id">Access Key ID</label>
+            <input type="text" id="aws_access_key_id" name="aws_access_key_id" value="{{ form.aws_access_key_id }}" placeholder="ACCESS_KEY">
+          </div>
+          <div class="field">
+            <label for="aws_secret_access_key">Secret Access Key</label>
+            <input type="password" id="aws_secret_access_key" name="aws_secret_access_key" value="{{ form.aws_secret_access_key }}" placeholder="SECRET_KEY">
+            <p class="hint">Por seguridad no se mostrará al recargar la página.</p>
+          </div>
+          <div class="field">
             <label for="allowed_extensions">Extensiones permitidas (opcional)</label>
             <input type="text" id="allowed_extensions" name="allowed_extensions" value="{{ form.allowed_extensions }}" placeholder="mp4, mov, zip">
           </div>

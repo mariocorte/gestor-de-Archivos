@@ -50,6 +50,9 @@ class SyncConfig:
     s3_bucket: str = ""
     s3_prefix: str = ""
     aws_region: Optional[str] = None
+    aws_access_key_id: Optional[str] = None
+    aws_secret_access_key: Optional[str] = None
+    s3_endpoint_url: Optional[str] = None
     delete_remote_after_upload: bool = False
     allowed_extensions: Optional[Sequence[str]] = None
 
@@ -277,7 +280,11 @@ def run_sync(config: SyncConfig, options: Optional[SyncOptions] = None) -> SyncS
     if not config.s3_bucket:
         raise SyncError("Debe especificarse el bucket de destino en S3")
 
-    logger.debug("Configuración empleada: %s", dataclasses.asdict(config))
+    config_snapshot = dataclasses.asdict(config)
+    for sensitive in ("sftp_password", "sftp_passphrase", "aws_secret_access_key"):
+        if sensitive in config_snapshot and config_snapshot[sensitive]:
+            config_snapshot[sensitive] = "<oculto>"
+    logger.debug("Configuración empleada: %s", config_snapshot)
 
     ssh_client = _connect_ssh(config)
     logger.info("Conexión SSH establecida con %s", config.sftp_host)
@@ -295,8 +302,18 @@ def run_sync(config: SyncConfig, options: Optional[SyncOptions] = None) -> SyncS
             session_kwargs = {}
             if config.aws_region:
                 session_kwargs["region_name"] = config.aws_region
+            if config.aws_access_key_id and config.aws_secret_access_key:
+                session_kwargs.update(
+                    {
+                        "aws_access_key_id": config.aws_access_key_id,
+                        "aws_secret_access_key": config.aws_secret_access_key,
+                    }
+                )
             session = boto3.session.Session(**session_kwargs)
-            s3_client = session.client("s3")
+            client_kwargs = {}
+            if config.s3_endpoint_url:
+                client_kwargs["endpoint_url"] = config.s3_endpoint_url
+            s3_client = session.client("s3", **client_kwargs)
             existing_objects = _list_existing_objects(
                 s3_client, config.s3_bucket, config.normalized_prefix()
             )
@@ -409,9 +426,36 @@ def config_from_env() -> SyncConfig:
         sftp_base_path=os.environ.get("SFTP_BASE_PATH", "."),
         sftp_encodings=_split(os.environ.get("SFTP_ENCODINGS"))
         or ("utf-8", "latin-1", "cp1252"),
-        s3_bucket=os.environ.get("S3_BUCKET", ""),
-        s3_prefix=os.environ.get("S3_PREFIX", ""),
-        aws_region=os.environ.get("AWS_REGION") or None,
+        s3_bucket=(
+            os.environ.get("S3_BUCKET")
+            or os.environ.get("BUCKET_NAME")
+            or ""
+        ),
+        s3_prefix=(
+            os.environ.get("S3_PREFIX")
+            or os.environ.get("DESTINO_DEF")
+            or ""
+        ),
+        aws_region=(
+            os.environ.get("AWS_REGION")
+            or os.environ.get("REGION")
+            or None
+        ),
+        aws_access_key_id=(
+            os.environ.get("AWS_ACCESS_KEY_ID")
+            or os.environ.get("ACCESS_KEY")
+            or None
+        ),
+        aws_secret_access_key=(
+            os.environ.get("AWS_SECRET_ACCESS_KEY")
+            or os.environ.get("SECRET_KEY")
+            or None
+        ),
+        s3_endpoint_url=(
+            os.environ.get("S3_ENDPOINT_URL")
+            or os.environ.get("ENDPOINT_URL")
+            or None
+        ),
         delete_remote_after_upload=
             os.environ.get("DELETE_REMOTE_AFTER_UPLOAD", "false").lower()
             in {"1", "true", "yes", "on"},
