@@ -17,7 +17,7 @@ import posixpath
 import stat
 import sys
 from dataclasses import dataclass, field
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
@@ -150,13 +150,57 @@ def _connect_ssh(config: SyncConfig) -> SSHClient:
     return client
 
 
+def _override_paramiko_encoding(encoding: str) -> Callable[[], None]:
+    """Sobrescribe temporalmente la codificación usada internamente por Paramiko."""
+
+    # ``paramiko.util.b`` y ``paramiko.util.u`` son las funciones responsables de
+    # convertir entre ``str`` y ``bytes``.  Paramiko no expone una API pública para
+    # ajustar la codificación utilizada, por lo que la única opción es reemplazar
+    # dinámicamente dichas funciones durante la vida útil del cliente SFTP.
+    import paramiko.util  # importación local para evitar efectos globales.
+
+    original_b = paramiko.util.b
+    original_u = paramiko.util.u
+
+    def patched_b(value, encoding: str = encoding):
+        return original_b(value, encoding=encoding)
+
+    def patched_u(value, encoding: str = encoding):
+        return original_u(value, encoding=encoding)
+
+    paramiko.util.b = patched_b
+    paramiko.util.u = patched_u
+
+    def restore() -> None:
+        paramiko.util.b = original_b
+        paramiko.util.u = original_u
+
+    return restore
+
+
 def _create_sftp_client(
     ssh_client: SSHClient, encoding: str
 ) -> paramiko.SFTPClient:
     transport = ssh_client.get_transport()
     if transport is None:  # pragma: no cover
         raise SyncError("No se pudo obtener el transporte SSH")
-    return paramiko.SFTPClient.from_transport(transport, encoding=encoding)
+    restore_encoding = _override_paramiko_encoding(encoding)
+    try:
+        sftp = paramiko.SFTPClient.from_transport(transport)
+    except Exception:
+        restore_encoding()
+        raise
+
+    original_close = sftp.close
+
+    def close_with_restore():
+        try:
+            original_close()
+        finally:
+            restore_encoding()
+
+    sftp.close = close_with_restore  # type: ignore[assignment]
+    return sftp
 
 
 def _iter_encodings(config: SyncConfig) -> Iterator[str]:
