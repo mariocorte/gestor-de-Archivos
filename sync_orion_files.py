@@ -212,12 +212,15 @@ def _create_sftp_client(
         raise
 
     original_close = sftp.close
+    setattr(sftp, "_tolerant_encoding", encoding)
 
     def close_with_restore():
         try:
             original_close()
         finally:
             restore_encoding()
+            if hasattr(sftp, "_tolerant_encoding"):
+                delattr(sftp, "_tolerant_encoding")
 
     sftp.close = close_with_restore  # type: ignore[assignment]
     return sftp
@@ -238,6 +241,80 @@ def _iter_encodings(config: SyncConfig) -> Iterator[str]:
         yield "utf-8"
 
 
+def _decode_filename(raw: bytes, encoding: Optional[str]) -> str:
+    candidates: List[str] = []
+    if encoding:
+        candidates.append(encoding)
+    lowered = {item.lower() for item in candidates}
+    if "utf-8" not in lowered:
+        candidates.append("utf-8")
+        lowered.add("utf-8")
+    if "latin-1" not in lowered:
+        candidates.append("latin-1")
+
+    last_error: Optional[UnicodeDecodeError] = None
+    for candidate in candidates:
+        try:
+            return raw.decode(candidate)
+        except UnicodeDecodeError as exc:
+            last_error = exc
+            logger.warning(
+                "Fallo al decodificar nombre con la codificación '%s'; "
+                "aplicando modo tolerante",
+                candidate,
+            )
+            try:
+                return raw.decode(candidate, errors="surrogateescape")
+            except UnicodeDecodeError:
+                continue
+
+    if last_error:
+        logger.debug("Imposible decodificar nombre de archivo", exc_info=last_error)
+    return raw.decode("utf-8", errors="surrogateescape")
+
+
+def _listdir_attr_tolerant(
+    sftp: paramiko.SFTPClient, path: str
+) -> List[SFTPAttributes]:
+    encoding = getattr(sftp, "_tolerant_encoding", None)
+    adjusted_path = sftp._adjust_cwd(path)  # type: ignore[attr-defined]
+    handle = None
+    filelist: List[SFTPAttributes] = []
+
+    try:
+        t, msg = sftp._request(paramiko.sftp.CMD_OPENDIR, adjusted_path)  # type: ignore[attr-defined]
+        if t != paramiko.sftp.CMD_HANDLE:  # type: ignore[attr-defined]
+            raise paramiko.SFTPError("Expected handle")
+        handle = msg.get_binary()
+        while True:
+            try:
+                t, msg = sftp._request(paramiko.sftp.CMD_READDIR, handle)  # type: ignore[attr-defined]
+            except EOFError:
+                break
+            if t != paramiko.sftp.CMD_NAME:  # type: ignore[attr-defined]
+                raise paramiko.SFTPError("Expected name response")
+            count = msg.get_int()
+            for _ in range(count):
+                filename_raw = msg.get_binary()
+                longname_raw = msg.get_binary()
+                filename = _decode_filename(filename_raw, encoding)
+                longname = _decode_filename(longname_raw, encoding)
+                attr = SFTPAttributes._from_msg(msg, filename, longname)
+                if filename not in (".", ".."):
+                    filelist.append(attr)
+    finally:
+        if handle is not None:
+            try:
+                sftp._request(paramiko.sftp.CMD_CLOSE, handle)  # type: ignore[attr-defined]
+            except Exception:
+                logger.debug(
+                    "No se pudo cerrar el handle de listado en modo tolerante",
+                    exc_info=True,
+                )
+
+    return filelist
+
+
 def _collect_remote_files(
     sftp: paramiko.SFTPClient, base_path: str, allowed_exts: Optional[Sequence[str]]
 ) -> List[RemoteFile]:
@@ -255,7 +332,14 @@ def _collect_remote_files(
     required_prefix = "38332"
 
     def _walk(current_path: str) -> None:
-        entries: List[SFTPAttributes] = sftp.listdir_attr(current_path)
+        try:
+            entries = sftp.listdir_attr(current_path)
+        except UnicodeError:
+            logger.warning(
+                "Fallo al listar '%s' con la codificación actual; reintentando en modo tolerante",
+                current_path,
+            )
+            entries = _listdir_attr_tolerant(sftp, current_path)
         for attr in entries:
             name = attr.filename
             if name in (".", ".."):
