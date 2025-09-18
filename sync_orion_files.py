@@ -33,6 +33,21 @@ except ImportError:  # pragma: no cover - ``python-dotenv`` es opcional.
 logger = logging.getLogger("sync_orion")
 
 
+_DEFAULT_ENV_LOADED = False
+
+
+def _ensure_default_env_loaded() -> None:
+    """Carga el archivo ``.env`` por defecto una única vez si está disponible."""
+
+    global _DEFAULT_ENV_LOADED
+    if _DEFAULT_ENV_LOADED:
+        return
+    _DEFAULT_ENV_LOADED = True
+    if load_dotenv is None:
+        return
+    load_dotenv()
+
+
 @dataclass
 class SyncConfig:
     """Configuración principal para la sincronización."""
@@ -156,7 +171,34 @@ def _create_sftp_client(
     transport = ssh_client.get_transport()
     if transport is None:  # pragma: no cover
         raise SyncError("No se pudo obtener el transporte SSH")
-    return paramiko.SFTPClient.from_transport(transport, encoding=encoding)
+    try:
+        return paramiko.SFTPClient.from_transport(transport, encoding=encoding)
+    except TypeError:
+        # Compatibilidad con versiones de Paramiko que no aceptan ``encoding``
+        # en ``from_transport``. Se reutiliza el cliente creado y se ajusta la
+        # codificación manualmente si es posible.
+        sftp = paramiko.SFTPClient.from_transport(transport)
+        channel = None
+        if hasattr(sftp, "get_channel"):
+            try:
+                channel = sftp.get_channel()
+            except Exception:  # pragma: no cover - protección adicional
+                channel = None
+        if channel is not None and hasattr(sftp, "_set_channel"):
+            try:
+                sftp._set_channel(channel, encoding=encoding)  # type: ignore[attr-defined]
+                return sftp
+            except TypeError:
+                pass
+        if hasattr(sftp, "_set_encoding"):
+            try:
+                sftp._set_encoding(encoding)  # type: ignore[attr-defined]
+                return sftp
+            except TypeError:
+                pass
+        if hasattr(sftp, "_encoding"):
+            sftp._encoding = encoding  # type: ignore[attr-defined]
+        return sftp
 
 
 def _iter_encodings(config: SyncConfig) -> Iterator[str]:
@@ -388,11 +430,13 @@ def _load_env_file(env_file: Optional[str]) -> None:
         raise SyncError(
             "Se indicó un archivo .env pero python-dotenv no está instalado"
         )
-    if not load_dotenv(env_file):
+    if not load_dotenv(env_file, override=True):
         raise SyncError(f"No se pudo cargar el archivo de entorno '{env_file}'")
 
 
 def config_from_env() -> SyncConfig:
+    _ensure_default_env_loaded()
+
     def _split(value: Optional[str]) -> Optional[List[str]]:
         if not value:
             return None
