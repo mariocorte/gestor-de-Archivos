@@ -171,7 +171,22 @@ def _override_paramiko_encoding(encoding: str) -> Callable[[], None]:
         return original_b(value, encoding=encoding)
 
     def patched_u(value, encoding: str = encoding):
-        return original_u(value, encoding=encoding)
+        try:
+            return original_u(value, encoding=encoding)
+        except UnicodeDecodeError:
+            logger.warning(
+                "Fallo al decodificar valor con la codificación '%s'; "
+                "aplicando modo tolerante",
+                encoding,
+            )
+            try:
+                return original_u(
+                    value, encoding=encoding, errors="surrogateescape"
+                )
+            except TypeError:
+                if isinstance(value, bytes):
+                    return value.decode(encoding, errors="surrogateescape")
+                return original_u(value, encoding=encoding)
 
     paramiko.util.b = patched_b
     paramiko.util.u = patched_u
