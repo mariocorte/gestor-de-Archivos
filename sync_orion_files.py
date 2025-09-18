@@ -32,6 +32,8 @@ except ImportError:  # pragma: no cover - ``python-dotenv`` es opcional.
 
 logger = logging.getLogger("sync_orion")
 
+S3_ENDPOINT_URL = os.environ.get("S3_ENDPOINT_URL", "http://dc-s3.justiciasalta.gov.ar")
+
 
 @dataclass
 class SyncConfig:
@@ -52,7 +54,7 @@ class SyncConfig:
     aws_region: Optional[str] = None
     delete_remote_after_upload: bool = False
     allowed_extensions: Optional[Sequence[str]] = field(
-        default_factory=lambda: (".webm",)
+        default_factory=lambda: (".webm", ".mp4")
     )
 
     def normalized_prefix(self) -> str:
@@ -342,7 +344,10 @@ def run_sync(config: SyncConfig, options: Optional[SyncOptions] = None) -> SyncS
             if config.aws_region:
                 session_kwargs["region_name"] = config.aws_region
             session = boto3.session.Session(**session_kwargs)
-            s3_client = session.client("s3")
+            client_kwargs = {}
+            if S3_ENDPOINT_URL:
+                client_kwargs["endpoint_url"] = S3_ENDPOINT_URL
+            s3_client = session.client("s3", **client_kwargs)
             existing_objects = _list_existing_objects(
                 s3_client, config.s3_bucket, config.normalized_prefix()
             )
@@ -469,7 +474,7 @@ def config_from_env() -> SyncConfig:
         delete_remote_after_upload=
             os.environ.get("DELETE_REMOTE_AFTER_UPLOAD", "false").lower()
             in {"1", "true", "yes", "on"},
-        allowed_extensions=None if allowed == [] else allowed or (".webm",),
+        allowed_extensions=None if allowed == [] else allowed or (".webm", ".mp4"),
     )
 
 
