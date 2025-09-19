@@ -175,13 +175,32 @@ def index():
             allowed_for_config = allowed_exts
         else:
             allowed_for_config = defaults.allowed_extensions
+        private_key_raw = (form.get("sftp_private_key") or "").strip()
+        private_key = private_key_raw or (defaults.sftp_private_key or None)
+
+        password_raw = form.get("sftp_password", "")
+        if password_raw:
+            password = password_raw
+        elif private_key:
+            password = None
+        else:
+            password = defaults.sftp_password
+
+        passphrase_raw = form.get("sftp_passphrase", "")
+        if passphrase_raw:
+            passphrase = passphrase_raw
+        elif private_key:
+            passphrase = defaults.sftp_passphrase
+        else:
+            passphrase = None
+
         config = SyncConfig(
             sftp_host=form.get("sftp_host", "").strip(),
             sftp_port=int(form.get("sftp_port", defaults.sftp_port) or defaults.sftp_port),
             sftp_username=form.get("sftp_username", "").strip(),
-            sftp_password=form.get("sftp_password") or None,
-            sftp_private_key=form.get("sftp_private_key") or None,
-            sftp_passphrase=form.get("sftp_passphrase") or None,
+            sftp_password=password,
+            sftp_private_key=private_key,
+            sftp_passphrase=passphrase,
             sftp_base_path=form.get("sftp_base_path", ".").strip() or ".",
             sftp_encodings=encodings or defaults.sftp_encodings,
             s3_bucket=form.get("s3_bucket", "").strip(),
