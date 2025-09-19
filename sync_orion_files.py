@@ -18,7 +18,7 @@ import stat
 import sys
 from datetime import datetime
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
@@ -446,6 +446,43 @@ def _remote_to_s3_key(remote: RemoteFile, base_path: str, prefix: str) -> str:
     return key
 
 
+def build_path_variants(path: str, base_path: str) -> Set[str]:
+    """Genera formas equivalentes de una ruta remota.
+
+    Permite comparar rutas provenientes del formulario web (que pueden estar
+    normalizadas de forma distinta) con las rutas completas obtenidas durante el
+    recorrido del SFTP.
+    """
+
+    cleaned = (path or "").strip()
+    if not cleaned:
+        return set()
+
+    normalized_base = posixpath.normpath(base_path or "")
+    if normalized_base in {"", "."}:
+        normalized_base = ""
+
+    variants = {cleaned}
+    normalized = posixpath.normpath(cleaned)
+    variants.add(normalized)
+
+    if normalized_base and (
+        normalized == normalized_base
+        or normalized.startswith(f"{normalized_base}{posixpath.sep}")
+    ):
+        try:
+            relative = posixpath.relpath(cleaned, normalized_base)
+        except ValueError:
+            # Si las rutas no comparten prefijo el valor relativo no es útil.
+            pass
+        else:
+            variants.add(relative)
+            variants.add(posixpath.normpath(relative))
+
+    # Eliminamos duplicados vacíos o referidos al directorio actual.
+    return {variant for variant in variants if variant and variant != "."}
+
+
 def _create_s3_client(config: SyncConfig):
     session_kwargs = {}
     if config.aws_region:
@@ -550,17 +587,33 @@ def run_sync(
     base_path = config.remote_base()
     prefix = config.normalized_prefix()
 
-    selection_filter = (
-        set(selected_remote_paths) if selected_remote_paths is not None else None
-    )
-    remaining_selection = set(selection_filter) if selection_filter is not None else set()
+    selection_lookup: Optional[Dict[str, str]] = None
+    remaining_selection: Set[str] = set()
+    if selected_remote_paths is not None:
+        lookup: Dict[str, str] = {}
+        for raw_path in selected_remote_paths:
+            normalized_input = (raw_path or "").strip()
+            if not normalized_input:
+                continue
+            for variant in build_path_variants(normalized_input, base_path):
+                lookup.setdefault(variant, normalized_input)
+        if lookup:
+            selection_lookup = lookup
+            remaining_selection = set(lookup.values())
+
     selected_remote: List[RemoteFile] = []
     for remote in remote_files:
-        if selection_filter is not None and remote.path not in selection_filter:
-            continue
+        matched_key: Optional[str] = None
+        if selection_lookup is not None:
+            for variant in build_path_variants(remote.path, base_path):
+                if variant in selection_lookup:
+                    matched_key = selection_lookup[variant]
+                    break
+            if matched_key is None:
+                continue
         selected_remote.append(remote)
-        if selection_filter is not None:
-            remaining_selection.discard(remote.path)
+        if matched_key is not None:
+            remaining_selection.discard(matched_key)
 
     if remaining_selection:
         logger.warning(
