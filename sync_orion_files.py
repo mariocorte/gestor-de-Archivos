@@ -16,6 +16,7 @@ import os
 import posixpath
 import stat
 import sys
+from threading import Event
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterator, List, Optional, Sequence, Set, Tuple
@@ -540,6 +541,8 @@ def run_sync(
     config: SyncConfig,
     options: Optional[SyncOptions] = None,
     selected_remote_paths: Optional[Sequence[str]] = None,
+    stop_event: Optional[Event] = None,
+    progress_callback: Optional[Callable[[FileProgress, str], None]] = None,
 ) -> SyncSummary:
     options = options or SyncOptions()
     if not config.sftp_host:
@@ -625,6 +628,30 @@ def run_sync(
     total_bytes = 0
     total_transferred = 0
 
+    def _notify(status: str, entry: FileProgress) -> None:
+        if progress_callback is None:
+            return
+        try:
+            progress_callback(entry, status)
+        except Exception:  # pragma: no cover - defensivo
+            logger.debug(
+                "Error al notificar el progreso; se ignora la actualización.",
+                exc_info=True,
+            )
+
+    stop_notified = False
+
+    def _stop_requested() -> bool:
+        nonlocal stop_notified
+        if stop_event is not None and stop_event.is_set():
+            if not stop_notified:
+                logger.info(
+                    "Se solicitó detener la copia; no se iniciarán nuevas transferencias después del archivo actual."
+                )
+                stop_notified = True
+            return True
+        return False
+
     try:
         if options.list_only:
             for remote in remote_files:
@@ -645,13 +672,21 @@ def run_sync(
                 transfer_candidates.append((remote, key))
             total_bytes = sum(remote.size for remote, _ in transfer_candidates)
             for remote, key in transfer_candidates:
+                if _stop_requested():
+                    break
                 entry = FileProgress(remote_path=remote.path, s3_key=key, size=remote.size)
                 transfer_progress.append(entry)
+                _notify("start", entry)
                 if options.dry_run:
                     uploaded += 1
                     entry.transferred = remote.size
-                    total_transferred = min(total_bytes, total_transferred + remote.size)
+                    total_transferred = min(
+                        total_bytes, total_transferred + remote.size
+                    )
                     logger.info("[DRY-RUN] Se subiría '%s'", key)
+                    _notify("finish", entry)
+                    if _stop_requested():
+                        break
                     continue
                 logger.info("Subiendo '%s' a s3://%s", key, config.s3_bucket)
 
@@ -682,6 +717,9 @@ def run_sync(
                     if total_transferred > total_bytes:
                         total_transferred = total_bytes
                     skipped += 1
+                    _notify("skipped", entry)
+                    if _stop_requested():
+                        break
                     continue
                 if entry.transferred < entry.size:
                     delta = entry.size - entry.transferred
@@ -695,6 +733,9 @@ def run_sync(
                     logger.info(
                         "Archivo remoto '%s' eliminado tras la carga", remote.path
                     )
+                _notify("finish", entry)
+                if _stop_requested():
+                    break
     finally:
         sftp.close()
         ssh_client.close()

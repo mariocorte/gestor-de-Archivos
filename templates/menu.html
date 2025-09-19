@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Gestor de archivos</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <main class="container menu-container">
+      <h1>Gestor de archivos</h1>
+      <p class="intro">
+        Seleccioná una operación para comenzar. Podés copiar los archivos disponibles en el NAS hacia el
+        almacenamiento S3 siguiendo el asistente paso a paso.
+      </p>
+      <section class="card menu-card">
+        <h2>Acciones disponibles</h2>
+        <ul class="menu-options">
+          <li>
+            <a href="{{ url_for('copy_view') }}" class="primary-link">Copiar Archivos desde NAS a S3</a>
+          </li>
+        </ul>
+      </section>
+    </main>
+  </body>
+</html>

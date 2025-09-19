@@ -1,19 +1,21 @@
 """Aplicación web para ejecutar ``sync_orion_files`` desde el navegador."""
 from __future__ import annotations
 
+import dataclasses
 import logging
 import posixpath
+import threading
 import traceback
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from flask import Flask, render_template, request
+from flask import Flask, jsonify, render_template, request
 
 from sync_orion_files import (
+    FileProgress,
     RemoteFile,
     SyncConfig,
     SyncError,
     SyncOptions,
-    build_path_variants,
     build_sync_plan,
     config_from_env,
     run_sync,
@@ -119,29 +121,190 @@ def _build_plan_context(
     }
 
 
-def _apply_selection_to_plan(plan: Dict[str, Any], selected_paths: Sequence[str]) -> None:
-    base_path = plan.get("base_path", "")
-    size_lookup: Dict[str, Tuple[str, int]] = {}
-    for item in plan["missing_files"]:
-        for variant in build_path_variants(item["remote_path"], base_path):
-            size_lookup.setdefault(variant, (item["remote_path"], item["size"]))
+class CopyManager:
+    """Gestiona la ejecución de copias en segundo plano."""
 
-    matched_paths: Set[str] = set()
-    selected_total = 0
-    for path in selected_paths:
-        for variant in build_path_variants(path, base_path):
-            entry = size_lookup.get(variant)
-            if entry is None:
-                continue
-            remote_path, size = entry
-            if remote_path in matched_paths:
-                continue
-            matched_paths.add(remote_path)
-            selected_total += size
-            break
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._thread: Optional[threading.Thread] = None
+        self._stop_event: Optional[threading.Event] = None
+        self._state: Dict[str, Any] = {
+            "status": "idle",
+            "current_file": None,
+            "message": None,
+            "summary": None,
+            "error": None,
+            "logs": "",
+            "plan": None,
+            "needs_refresh": False,
+        }
 
-    plan["selected_total_bytes"] = selected_total
-    plan["selected_total_label"] = _format_size(selected_total)
+    def snapshot(self, consume_refresh: bool = False) -> Dict[str, Any]:
+        with self._lock:
+            data = {
+                "status": self._state["status"],
+                "current_file": self._state["current_file"],
+                "message": self._state["message"],
+                "summary": self._state["summary"],
+                "error": self._state["error"],
+                "logs": self._state["logs"],
+                "plan": self._state["plan"],
+            }
+            if consume_refresh and self._state["needs_refresh"]:
+                data["needs_refresh"] = True
+                self._state["needs_refresh"] = False
+            else:
+                data["needs_refresh"] = False
+            return data
+
+    def is_active(self) -> bool:
+        with self._lock:
+            return self._thread is not None and self._thread.is_alive()
+
+    def update_plan(self, plan: Optional[Dict[str, Any]]) -> None:
+        with self._lock:
+            self._state["plan"] = plan
+
+    def start(
+        self,
+        config: SyncConfig,
+        options: SyncOptions,
+        remote_paths: Optional[Sequence[str]],
+        plan: Optional[Dict[str, Any]],
+    ) -> bool:
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return False
+            self._stop_event = threading.Event()
+            self._state.update(
+                {
+                    "status": "running",
+                    "message": "Se inició la copia de archivos.",
+                    "current_file": None,
+                    "summary": None,
+                    "error": None,
+                    "logs": "",
+                    "plan": plan,
+                    "needs_refresh": False,
+                }
+            )
+            thread = threading.Thread(
+                target=self._worker,
+                args=(
+                    dataclasses.replace(config),
+                    dataclasses.replace(options),
+                    list(remote_paths or []),
+                    self._stop_event,
+                ),
+                daemon=True,
+            )
+            self._thread = thread
+            thread.start()
+            return True
+
+    def request_stop(self) -> bool:
+        with self._lock:
+            if (
+                self._thread is not None
+                and self._thread.is_alive()
+                and self._stop_event is not None
+            ):
+                self._stop_event.set()
+                self._state.update(
+                    {
+                        "status": "stopping",
+                        "message": "Se detendrá al finalizar el archivo actual y se actualizarán las listas.",
+                    }
+                )
+                return True
+            return False
+
+    def _worker(
+        self,
+        config: SyncConfig,
+        options: SyncOptions,
+        remote_paths: Sequence[str],
+        stop_event: threading.Event,
+    ) -> None:
+        handler = _BufferLogHandler()
+        sync_logger = logging.getLogger("sync_orion")
+        previous_level = sync_logger.level
+        sync_logger.addHandler(handler)
+        sync_logger.setLevel(logging.INFO)
+
+        def _progress(entry: FileProgress, status: str) -> None:
+            with self._lock:
+                if status == "start":
+                    self._state["current_file"] = entry.remote_path
+                elif status in {"finish", "skipped"}:
+                    self._state["current_file"] = None
+
+        try:
+            summary = run_sync(
+                config,
+                options,
+                selected_remote_paths=remote_paths or None,
+                stop_event=stop_event,
+                progress_callback=_progress,
+            )
+            plan_context = _build_plan_context(
+                config,
+                summary.encoding_used,
+                summary.remote_files,
+                summary.existing_objects,
+            )
+            with self._lock:
+                self._state.update(
+                    {
+                        "summary": summary,
+                        "logs": handler.text,
+                        "status": "completed"
+                        if not stop_event.is_set()
+                        else "stopped",
+                        "message": (
+                            "Copia finalizada correctamente."
+                            if not stop_event.is_set()
+                            else "La copia se detuvo tras finalizar el archivo en curso."
+                        ),
+                        "plan": plan_context,
+                        "current_file": None,
+                        "needs_refresh": True,
+                    }
+                )
+        except Exception as exc:
+            extra_logs = traceback.format_exc()
+            with self._lock:
+                self._state.update(
+                    {
+                        "error": str(exc),
+                        "logs": f"{handler.text}\n\n{extra_logs}".strip(),
+                        "status": "error",
+                        "message": "Ocurrió un error durante la copia.",
+                        "current_file": None,
+                        "needs_refresh": True,
+                    }
+                )
+        finally:
+            sync_logger.removeHandler(handler)
+            sync_logger.setLevel(previous_level)
+            with self._lock:
+                self._thread = None
+                self._stop_event = None
+
+
+def _status_label(status: str) -> str:
+    mapping = {
+        "idle": "Sin actividad",
+        "running": "Copiando archivos",
+        "stopping": "Deteniendo copia",
+        "stopped": "Copia detenida",
+        "completed": "Copia finalizada",
+        "error": "Error en la copia",
+    }
+    return mapping.get(status, "Sin información")
+
+
+copy_manager = CopyManager()
 
 
 @app.template_filter("human_size")
@@ -152,38 +315,39 @@ def _human_size_filter(value: Any) -> str:
         return "-"
 
 
-@app.route("/", methods=["GET", "POST"])
-def index():
+@app.route("/")
+def menu():
+    return render_template("menu.html")
+
+
+@app.route("/copy", methods=["GET", "POST"])
+def copy_view():
     defaults = config_from_env()
-    context = {
-        "form": {
-            "sftp_host": defaults.sftp_host,
-            "sftp_port": defaults.sftp_port,
-            "sftp_username": defaults.sftp_username,
-            "sftp_password": "",
-            "sftp_private_key": defaults.sftp_private_key or "",
-            "sftp_passphrase": "",
-            "sftp_base_path": defaults.sftp_base_path,
-            "sftp_encodings": ", ".join(defaults.sftp_encodings),
-            "s3_bucket": defaults.s3_bucket,
-            "s3_prefix": defaults.s3_prefix,
-            "aws_region": defaults.aws_region or "",
-            "delete_remote_after_upload": defaults.delete_remote_after_upload,
-            "allowed_extensions": (
-                "*"
-                if defaults.allowed_extensions is None
-                else ", ".join(defaults.allowed_extensions)
-            ),
-            "dry_run": False,
-            "list_only": False,
-            "operation": "list",
-        },
-        "summary": None,
-        "logs": "",
-        "error": None,
-        "plan": None,
-        "selected_files": [],
+    form_context = {
+        "sftp_host": defaults.sftp_host,
+        "sftp_port": defaults.sftp_port,
+        "sftp_username": defaults.sftp_username,
+        "sftp_password": "",
+        "sftp_private_key": defaults.sftp_private_key or "",
+        "sftp_passphrase": "",
+        "sftp_base_path": defaults.sftp_base_path,
+        "sftp_encodings": ", ".join(defaults.sftp_encodings),
+        "s3_bucket": defaults.s3_bucket,
+        "s3_prefix": defaults.s3_prefix,
+        "aws_region": defaults.aws_region or "",
+        "delete_remote_after_upload": defaults.delete_remote_after_upload,
+        "allowed_extensions": (
+            "*"
+            if defaults.allowed_extensions is None
+            else ", ".join(defaults.allowed_extensions)
+        ),
+        "dry_run": False,
+        "list_only": False,
     }
+    plan: Optional[Dict[str, Any]] = None
+    message: Optional[str] = None
+    error: Optional[str] = None
+    extra_logs: Optional[str] = None
 
     if request.method == "POST":
         form = request.form
@@ -191,7 +355,7 @@ def index():
         allowed_raw = form.get("allowed_extensions", "")
         allowed_exts = _split_csv(allowed_raw)
         if allowed_raw.strip() == "*":
-            allowed_for_config = None
+            allowed_for_config: Optional[Sequence[str]] = None
         elif allowed_exts:
             allowed_for_config = allowed_exts
         else:
@@ -227,104 +391,132 @@ def index():
             s3_bucket=form.get("s3_bucket", "").strip(),
             s3_prefix=form.get("s3_prefix", "").strip(),
             aws_region=form.get("aws_region") or None,
-            delete_remote_after_upload=_parse_bool(
-                form.get("delete_remote_after_upload")
-            ),
+            delete_remote_after_upload=_parse_bool(form.get("delete_remote_after_upload")),
             allowed_extensions=allowed_for_config,
         )
         options = SyncOptions(
             dry_run=_parse_bool(form.get("dry_run")),
             list_only=_parse_bool(form.get("list_only")),
         )
-
         operation = form.get("operation", "list")
-        selected_files = list(form.getlist("selected_files"))
-        context["selected_files"] = selected_files
-        context["form"]["operation"] = operation
-
-        handler = _BufferLogHandler()
-        sync_logger = logging.getLogger("sync_orion")
-        previous_level = sync_logger.level
-        sync_logger.setLevel(logging.INFO)
-        sync_logger.addHandler(handler)
-
-        plan: Optional[Dict[str, Any]] = None
-
-        extra_logs: Optional[str] = None
 
         try:
-            if operation == "sync":
-                if not selected_files:
-                    context["error"] = "Selecciona al menos un archivo para copiar."
-                    encoding, remote_files, existing_objects = build_sync_plan(config)
-                    plan = _build_plan_context(
-                        config, encoding, remote_files, existing_objects
-                    )
+            if operation == "list":
+                encoding, remote_files, existing_objects = build_sync_plan(config)
+                plan = _build_plan_context(
+                    config, encoding, remote_files, existing_objects
+                )
+                copy_manager.update_plan(plan)
+                message = "Listado actualizado."
+            elif operation == "start_copy":
+                encoding, remote_files, existing_objects = build_sync_plan(config)
+                plan = _build_plan_context(
+                    config, encoding, remote_files, existing_objects
+                )
+                copy_manager.update_plan(plan)
+                missing_paths = [
+                    item["remote_path"] for item in plan.get("missing_files", [])
+                ]
+                if not missing_paths:
+                    message = "No hay archivos pendientes para copiar."
                 else:
-                    summary = run_sync(
-                        config, options, selected_remote_paths=selected_files
+                    started = copy_manager.start(
+                        config, options, missing_paths, plan
                     )
-                    context["summary"] = summary
-                    plan = _build_plan_context(
-                        config,
-                        summary.encoding_used,
-                        summary.remote_files,
-                        summary.existing_objects,
-                    )
-                    selected_files = [
-                        item["remote_path"] for item in plan["missing_files"]
-                    ]
-                    context["selected_files"] = selected_files
+                    if started:
+                        message = "Se inició la copia de archivos."
+                    else:
+                        message = "Ya hay una copia en ejecución."
+            elif operation == "stop_copy":
+                if copy_manager.request_stop():
+                    message = "Se detendrá al finalizar el archivo actual y se actualizarán las listas."
+                else:
+                    message = "No hay una copia en ejecución."
             else:
                 encoding, remote_files, existing_objects = build_sync_plan(config)
                 plan = _build_plan_context(
                     config, encoding, remote_files, existing_objects
                 )
-                if not selected_files:
-                    selected_files = [
-                        item["remote_path"] for item in plan["missing_files"]
-                    ]
-                    context["selected_files"] = selected_files
+                copy_manager.update_plan(plan)
+                message = "Listado actualizado."
         except SyncError as exc:
-            context["error"] = str(exc)
+            error = str(exc)
         except Exception as exc:  # pragma: no cover - ruta defensiva
             app.logger.exception("Error inesperado durante la sincronización")
-            context["error"] = f"Ocurrió un error inesperado: {exc}"
+            error = f"Ocurrió un error inesperado: {exc}"
             extra_logs = traceback.format_exc()
         finally:
-            sync_logger.removeHandler(handler)
-            sync_logger.setLevel(previous_level)
-            logs = handler.text
-            if extra_logs:
-                logs = f"{logs}\n\n{extra_logs}" if logs else extra_logs
-            context["logs"] = logs
-            context["form"].update({
-                "sftp_host": config.sftp_host,
-                "sftp_port": config.sftp_port,
-                "sftp_username": config.sftp_username,
-                "sftp_private_key": config.sftp_private_key or "",
-                "sftp_password": password_raw,
-                "sftp_passphrase": passphrase_raw,
-                "sftp_base_path": config.sftp_base_path,
-                "sftp_encodings": ", ".join(config.sftp_encodings),
-                "s3_bucket": config.s3_bucket,
-                "s3_prefix": config.s3_prefix,
-                "aws_region": config.aws_region or "",
-                "delete_remote_after_upload": config.delete_remote_after_upload,
-                "allowed_extensions": (
-                    "*"
-                    if config.allowed_extensions is None
-                    else ", ".join(config.allowed_extensions)
-                ),
-                "dry_run": options.dry_run,
-                "list_only": options.list_only,
-                "operation": operation,
-            })
-            if plan is not None:
-                _apply_selection_to_plan(plan, context["selected_files"])
-                context["plan"] = plan
+            form_context.update(
+                {
+                    "sftp_host": config.sftp_host,
+                    "sftp_port": config.sftp_port,
+                    "sftp_username": config.sftp_username,
+                    "sftp_private_key": config.sftp_private_key or "",
+                    "sftp_password": password_raw,
+                    "sftp_passphrase": passphrase_raw,
+                    "sftp_base_path": config.sftp_base_path,
+                    "sftp_encodings": ", ".join(config.sftp_encodings),
+                    "s3_bucket": config.s3_bucket,
+                    "s3_prefix": config.s3_prefix,
+                    "aws_region": config.aws_region or "",
+                    "delete_remote_after_upload": config.delete_remote_after_upload,
+                    "allowed_extensions": (
+                        "*"
+                        if config.allowed_extensions is None
+                        else ", ".join(config.allowed_extensions)
+                    ),
+                    "dry_run": options.dry_run,
+                    "list_only": options.list_only,
+                }
+            )
 
-    return render_template("index.html", **context)
+    copy_state = copy_manager.snapshot()
+    summary = copy_state.get("summary")
+    state_logs = copy_state.get("logs", "")
+    if extra_logs:
+        logs = f"{state_logs}\n\n{extra_logs}" if state_logs else extra_logs
+    else:
+        logs = state_logs
+    status = copy_state.get("status", "idle")
+    status_label = _status_label(status)
+    current_file = copy_state.get("current_file")
+    if plan is None:
+        plan = copy_state.get("plan")
+    if not message:
+        message = copy_state.get("message")
+    if not error:
+        error = copy_state.get("error")
+
+    context = {
+        "form": form_context,
+        "plan": plan,
+        "summary": summary,
+        "logs": logs,
+        "error": error,
+        "message": message,
+        "status": status,
+        "status_label": status_label,
+        "current_file": current_file,
+        "disable_start": status in {"running", "stopping"},
+        "disable_stop": status not in {"running", "stopping"},
+    }
+    return render_template("copy.html", **context)
+
+
+@app.route("/copy/status")
+def copy_status():
+    state = copy_manager.snapshot(consume_refresh=True)
+    status = state.get("status", "idle")
+    return jsonify(
+        {
+            "status": status,
+            "status_label": _status_label(status),
+            "current_file": state.get("current_file"),
+            "message": state.get("message"),
+            "error": state.get("error"),
+            "should_refresh": bool(state.get("needs_refresh")),
+        }
+    )
 
 
 @app.route("/health")
