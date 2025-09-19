@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import posixpath
+import traceback
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from flask import Flask, render_template, request
@@ -249,6 +250,8 @@ def index():
 
         plan: Optional[Dict[str, Any]] = None
 
+        extra_logs: Optional[str] = None
+
         try:
             if operation == "sync":
                 if not selected_files:
@@ -284,10 +287,17 @@ def index():
                     context["selected_files"] = selected_files
         except SyncError as exc:
             context["error"] = str(exc)
+        except Exception as exc:  # pragma: no cover - ruta defensiva
+            app.logger.exception("Error inesperado durante la sincronización")
+            context["error"] = f"Ocurrió un error inesperado: {exc}"
+            extra_logs = traceback.format_exc()
         finally:
             sync_logger.removeHandler(handler)
             sync_logger.setLevel(previous_level)
-            context["logs"] = handler.text
+            logs = handler.text
+            if extra_logs:
+                logs = f"{logs}\n\n{extra_logs}" if logs else extra_logs
+            context["logs"] = logs
             context["form"].update({
                 "sftp_host": config.sftp_host,
                 "sftp_port": config.sftp_port,
