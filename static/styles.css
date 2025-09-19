@@ -22,6 +22,14 @@ body {
   padding: 2rem 1.5rem 3rem;
 }
 
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
 h1 {
   margin-top: 0;
   font-size: 2rem;
@@ -118,48 +126,76 @@ h1 {
   background: #0053a4;
 }
 
-button.secondary {
+button.secondary,
+a.secondary {
   background: transparent;
   color: var(--accent);
   border: 1px solid var(--accent);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
 }
 
 button.secondary:hover,
-button.secondary:focus {
+button.secondary:focus,
+a.secondary:hover,
+a.secondary:focus {
   background: rgba(0, 106, 212, 0.1);
   color: var(--accent);
 }
 
-button.secondary:focus {
+button.secondary:focus,
+a.secondary:focus {
   outline: none;
   box-shadow: 0 0 0 3px rgba(0, 106, 212, 0.15);
 }
 
+button.danger {
+  background: #c53030;
+}
+
+button.danger:hover {
+  background: #9b2c2c;
+}
+
+button:disabled,
+button:disabled:hover {
+  opacity: 0.6;
+  cursor: not-allowed;
+  background: #7b8794;
+  color: #f8fafc;
+}
+
+.status-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.status-banner {
+  border-radius: 10px;
+  padding: 0.85rem 1rem;
+  background: rgba(0, 106, 212, 0.12);
+  border: 1px solid rgba(0, 106, 212, 0.35);
+  color: #003a73;
+  font-weight: 600;
+  margin-bottom: 1rem;
+}
+
+.status-banner.error {
+  background: var(--error-bg);
+  border-color: var(--error-border);
+  color: var(--error-border);
+}
+
+.hidden {
+  display: none !important;
+}
+
 .transfer-plan {
   margin-top: 2rem;
-}
-
-.selection-actions {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 1rem;
-  flex-wrap: wrap;
-  margin-bottom: 0.75rem;
-}
-
-.selection-buttons {
-  display: flex;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-
-.selection-buttons button {
-  padding: 0.55rem 1.1rem;
-}
-
-.selection-count {
-  font-weight: 500;
 }
 
 .file-list {
@@ -184,17 +220,6 @@ button.secondary:focus {
   border-bottom: none;
 }
 
-.file-option {
-  display: flex;
-  gap: 0.75rem;
-  align-items: flex-start;
-  width: 100%;
-}
-
-.file-option input[type="checkbox"] {
-  margin-top: 0.25rem;
-}
-
 .file-name {
   font-weight: 600;
   word-break: break-all;
@@ -205,26 +230,15 @@ button.secondary:focus {
   color: var(--muted);
 }
 
-.file-list.selectable li {
-  flex-direction: column;
-  padding: 0;
-}
-
-.file-list.selectable label {
-  padding: 0.75rem 1rem;
-  display: flex;
-  gap: 0.5rem;
-  flex-direction: column;
-  cursor: pointer;
-}
-
-.file-list.selectable label:hover {
-  background: rgba(0, 106, 212, 0.08);
-}
-
 .file-list.existing li {
   justify-content: space-between;
   align-items: center;
+}
+
+.file-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
 }
 
 .existing-files {
@@ -233,59 +247,6 @@ button.secondary:focus {
 
 .total-size {
   margin-top: 0.75rem;
-}
-
-.progress-card {
-  margin-top: 1.5rem;
-}
-
-.progress-overall {
-  margin-bottom: 1.25rem;
-}
-
-.progress-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-weight: 600;
-}
-
-.progress-bar {
-  background: #e4e7eb;
-  border-radius: 999px;
-  height: 8px;
-  overflow: hidden;
-  margin-top: 0.4rem;
-}
-
-.progress-fill {
-  height: 100%;
-  background: var(--accent);
-  transition: width 0.3s ease;
-}
-
-.progress-meta {
-  font-size: 0.85rem;
-  color: var(--muted);
-  margin-top: 0.35rem;
-}
-
-.progress-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.progress-list .file-name {
-  font-weight: 600;
-}
-
-.progress-list .percentage {
-  font-size: 0.9rem;
-  color: var(--muted);
 }
 
 .card.error {
@@ -311,4 +272,46 @@ button.secondary:focus {
   .card {
     padding: 1.25rem;
   }
+}
+.menu-container {
+  max-width: 720px;
+}
+
+.menu-card {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.menu-options {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.menu-options li {
+  display: flex;
+}
+
+.primary-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: #fff;
+  padding: 0.95rem 1.6rem;
+  border-radius: 10px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background 0.2s ease;
+}
+
+.primary-link:hover,
+.primary-link:focus {
+  background: #0053a4;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(0, 106, 212, 0.15);
 }

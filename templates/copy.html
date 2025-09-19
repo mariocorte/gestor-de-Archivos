@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Copiar archivos desde NAS a S3</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <main class="container">
+      <header class="page-header">
+        <h1>Copiar archivos desde NAS a S3</h1>
+        <a href="{{ url_for('menu') }}" class="secondary back-button">Volver al menú</a>
+      </header>
+      <p class="intro">
+        Configurá los datos del servidor NAS y del bucket de Amazon S3 para listar los archivos
+        disponibles. Desde aquí podés iniciar la copia completa de los archivos pendientes.
+      </p>
+
+      <div class="status-banner {% if not message %}hidden{% endif %}" data-copy-message>
+        {{ message or '' }}
+      </div>
+      <div class="status-banner error {% if not error %}hidden{% endif %}" data-copy-error>
+        {{ error or '' }}
+      </div>
+
+      <section class="card status-card" data-status-url="{{ url_for('copy_status') }}">
+        <h2>Estado de la copia</h2>
+        <p><strong>Estado actual:</strong> <span data-copy-status>{{ status_label }}</span></p>
+        <p>
+          <strong>Archivo en proceso:</strong>
+          <span data-current-file>{{ current_file or 'Sin transferencias en curso' }}</span>
+        </p>
+      </section>
+
+      <form method="post" class="card">
+        <section>
+          <h2>Servidor SFTP</h2>
+          <div class="field">
+            <label for="sftp_host">Host</label>
+            <input type="text" id="sftp_host" name="sftp_host" value="{{ form.sftp_host }}" required>
+          </div>
+          <div class="field grid">
+            <div>
+              <label for="sftp_port">Puerto</label>
+              <input type="number" id="sftp_port" name="sftp_port" value="{{ form.sftp_port }}" min="1" max="65535" required>
+            </div>
+            <div>
+              <label for="sftp_username">Usuario</label>
+              <input type="text" id="sftp_username" name="sftp_username" value="{{ form.sftp_username }}">
+            </div>
+          </div>
+          <div class="field grid">
+            <div>
+              <label for="sftp_password">Contraseña</label>
+              <input type="password" id="sftp_password" name="sftp_password" value="{{ form.sftp_password }}">
+            </div>
+            <div>
+              <label for="sftp_private_key">Clave privada (opcional)</label>
+              <input type="text" id="sftp_private_key" name="sftp_private_key" value="{{ form.sftp_private_key }}" placeholder="/ruta/a/id_rsa">
+            </div>
+          </div>
+          <div class="field">
+            <label for="sftp_passphrase">Passphrase de la clave</label>
+            <input type="password" id="sftp_passphrase" name="sftp_passphrase" value="{{ form.sftp_passphrase }}">
+          </div>
+          <div class="field">
+            <label for="sftp_base_path">Ruta base</label>
+            <input type="text" id="sftp_base_path" name="sftp_base_path" value="{{ form.sftp_base_path }}" required>
+          </div>
+          <div class="field">
+            <label for="sftp_encodings">Codificaciones (orden de prioridad)</label>
+            <input type="text" id="sftp_encodings" name="sftp_encodings" value="{{ form.sftp_encodings }}" placeholder="utf-8, latin-1, cp1252">
+            <p class="hint">Se probarán en el orden indicado hasta obtener un listado válido.</p>
+          </div>
+        </section>
+
+        <section>
+          <h2>Destino en Amazon S3</h2>
+          <div class="field">
+            <label for="s3_bucket">Bucket</label>
+            <input type="text" id="s3_bucket" name="s3_bucket" value="{{ form.s3_bucket }}" required>
+          </div>
+          <div class="field">
+            <label for="s3_prefix">Prefijo (carpeta)</label>
+            <input type="text" id="s3_prefix" name="s3_prefix" value="{{ form.s3_prefix }}" placeholder="videosorion">
+          </div>
+          <div class="field">
+            <label for="aws_region">Región de AWS</label>
+            <input type="text" id="aws_region" name="aws_region" value="{{ form.aws_region }}" placeholder="us-east-1">
+          </div>
+          <div class="field">
+            <label for="allowed_extensions">Extensiones permitidas (opcional)</label>
+            <input type="text" id="allowed_extensions" name="allowed_extensions" value="{{ form.allowed_extensions }}" placeholder="mp4, mov, zip">
+          </div>
+          <div class="field checkbox">
+            <label>
+              <input type="checkbox" name="delete_remote_after_upload" value="true" {% if form.delete_remote_after_upload %}checked{% endif %}>
+              Eliminar archivo remoto tras subirlo a S3
+            </label>
+          </div>
+        </section>
+
+        <section>
+          <h2>Opciones de ejecución</h2>
+          <div class="field checkbox">
+            <label>
+              <input type="checkbox" name="dry_run" value="true" {% if form.dry_run %}checked{% endif %}>
+              Simulación (dry-run)
+            </label>
+          </div>
+          <div class="field checkbox">
+            <label>
+              <input type="checkbox" name="list_only" value="true" {% if form.list_only %}checked{% endif %}>
+              Solo listar archivos sin subir
+            </label>
+          </div>
+        </section>
+
+        <div class="actions">
+          <button type="submit" name="operation" value="list" class="secondary">Actualizar listado</button>
+          <button type="submit" name="operation" value="start_copy" {% if disable_start %}disabled{% endif %}>Iniciar copia</button>
+          <button type="submit" name="operation" value="stop_copy" class="danger" {% if disable_stop %}disabled{% endif %}>Detener copia</button>
+        </div>
+      </form>
+
+      {% if plan %}
+      <section class="card transfer-plan">
+        <h2>Archivos pendientes en NAS</h2>
+        <p class="hint">
+          Codificación utilizada: <strong>{{ plan.encoding }}</strong>. Se detectaron
+          <strong>{{ plan.remote_total }}</strong> archivos en origen y
+          <strong>{{ plan.existing_count }}</strong> ya existen en S3.
+        </p>
+        {% if plan.missing_files %}
+        <p class="hint">
+          Pendientes de copiar: <strong>{{ plan.missing_count }}</strong> archivos
+          ({{ plan.total_missing_label }}).
+        </p>
+        <ul class="file-list">
+          {% for item in plan.missing_files %}
+          <li>
+            <div class="file-info">
+              <span class="file-name">{{ item.remote_path }}</span>
+              <span class="file-meta">{{ item.s3_key }} · {{ item.size_label }}</span>
+            </div>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="hint">No hay archivos pendientes de copiar: todos los archivos del NAS se encuentran en el destino.</p>
+        {% endif %}
+      </section>
+
+      <section class="card existing-files">
+        <h2>Archivos disponibles en S3</h2>
+        {% if plan.existing_files %}
+        <ul class="file-list existing">
+          {% for item in plan.existing_files %}
+          <li>
+            <div class="file-info">
+              <span class="file-name">{{ item.key }}</span>
+              <span class="file-meta">{{ item.size_label }}</span>
+            </div>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="hint">No se encontraron archivos en el destino con el prefijo indicado.</p>
+        {% endif %}
+      </section>
+      {% endif %}
+
+      {% if summary %}
+      <section class="card">
+        <h2>Resumen de la última ejecución</h2>
+        <ul>
+          <li><strong>Codificación utilizada:</strong> {{ summary.encoding_used }}</li>
+          <li><strong>Archivos remotos detectados:</strong> {{ summary.total_remote_files }}</li>
+          <li><strong>Archivos seleccionados:</strong> {{ summary.selected_files }}</li>
+          {% if not summary.list_only %}
+          <li><strong>Archivos subidos a S3:</strong> {{ summary.uploaded_files }}</li>
+          <li><strong>Omitidos por existir:</strong> {{ summary.skipped_existing }}</li>
+          <li><strong>Tamaño transferido:</strong> {{ summary.total_transferred|human_size }} / {{ summary.total_bytes|human_size }}</li>
+          {% if summary.deleted_remote %}
+          <li><strong>Eliminados en origen:</strong> {{ summary.deleted_remote }}</li>
+          {% endif %}
+          {% endif %}
+          {% if summary.dry_run %}
+          <li><strong>Modo simulación activado.</strong></li>
+          {% endif %}
+        </ul>
+      </section>
+      {% endif %}
+
+      {% if logs %}
+      <section class="card logs">
+        <h2>Registro de la ejecución</h2>
+        <pre>{{ logs }}</pre>
+      </section>
+      {% endif %}
+    </main>
+    <script>
+      document.addEventListener('DOMContentLoaded', () => {
+        const statusCard = document.querySelector('[data-status-url]');
+        if (!statusCard) {
+          return;
+        }
+        const statusUrl = statusCard.getAttribute('data-status-url');
+        const statusLabelEl = statusCard.querySelector('[data-copy-status]');
+        const currentFileEl = statusCard.querySelector('[data-current-file]');
+        const messageEl = document.querySelector('[data-copy-message]');
+        const errorEl = document.querySelector('[data-copy-error]');
+
+        const updateBanner = (element, text) => {
+          if (!element) {
+            return;
+          }
+          const trimmed = (text || '').trim();
+          element.textContent = trimmed;
+          if (trimmed) {
+            element.classList.remove('hidden');
+          } else {
+            element.classList.add('hidden');
+          }
+        };
+
+        const refreshStatus = () => {
+          fetch(statusUrl)
+            .then((response) => response.json())
+            .then((data) => {
+              if (statusLabelEl) {
+                statusLabelEl.textContent = data.status_label || 'Sin información';
+              }
+              if (currentFileEl) {
+                currentFileEl.textContent = data.current_file || 'Sin transferencias en curso';
+              }
+              updateBanner(messageEl, data.message);
+              updateBanner(errorEl, data.error);
+              if (data.should_refresh) {
+                window.location.reload();
+              }
+            })
+            .catch(() => {
+              /* Ignorar errores de actualización en segundo plano */
+            });
+        };
+
+        refreshStatus();
+        window.setInterval(refreshStatus, 5000);
+      });
+    </script>
+  </body>
+</html>
