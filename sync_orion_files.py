@@ -611,10 +611,25 @@ def run_sync(
                         total_bytes, total_transferred + int(bytes_amount)
                     )
 
-                with sftp.file(remote.path, "rb") as remote_fp:
-                    s3_client.upload_fileobj(
-                        remote_fp, config.s3_bucket, key, Callback=_callback
+                try:
+                    with sftp.file(remote.path, "rb") as remote_fp:
+                        s3_client.upload_fileobj(
+                            remote_fp, config.s3_bucket, key, Callback=_callback
+                        )
+                except FileNotFoundError:
+                    logger.warning(
+                        "El archivo remoto '%s' ya no está disponible; se omitirá.",
+                        remote.path,
                     )
+                    try:
+                        transfer_progress.remove(entry)
+                    except ValueError:
+                        pass
+                    total_bytes = max(0, total_bytes - remote.size)
+                    if total_transferred > total_bytes:
+                        total_transferred = total_bytes
+                    skipped += 1
+                    continue
                 if entry.transferred < entry.size:
                     delta = entry.size - entry.transferred
                     entry.transferred = entry.size
