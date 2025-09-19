@@ -273,6 +273,8 @@ def index():
                 "sftp_port": config.sftp_port,
                 "sftp_username": config.sftp_username,
                 "sftp_private_key": config.sftp_private_key or "",
+                "sftp_password": password_raw,
+                "sftp_passphrase": passphrase_raw,
                 "sftp_base_path": config.sftp_base_path,
                 "sftp_encodings": ", ".join(config.sftp_encodings),
                 "s3_bucket": config.s3_bucket,
