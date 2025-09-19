@@ -89,6 +89,22 @@ class RemoteFile:
 
 
 @dataclass
+class FileProgress:
+    """Representa el avance de la transferencia de un archivo."""
+
+    remote_path: str
+    s3_key: str
+    size: int
+    transferred: int = 0
+
+    @property
+    def percentage(self) -> float:
+        if self.size <= 0:
+            return 100.0
+        return min(100.0, (self.transferred / self.size) * 100.0)
+
+
+@dataclass
 class SyncSummary:
     """Resumen de la ejecución de ``run_sync``."""
 
@@ -99,6 +115,18 @@ class SyncSummary:
     deleted_remote: int
     dry_run: bool
     list_only: bool
+    remote_files: List[RemoteFile] = field(default_factory=list)
+    existing_objects: Dict[str, int] = field(default_factory=dict)
+    progress: List[FileProgress] = field(default_factory=list)
+    total_bytes: int = 0
+    total_transferred: int = 0
+    selected_files: int = 0
+
+    @property
+    def total_percentage(self) -> float:
+        if self.total_bytes <= 0:
+            return 100.0
+        return min(100.0, (self.total_transferred / self.total_bytes) * 100.0)
 
 
 class SyncError(RuntimeError):
@@ -418,7 +446,64 @@ def _remote_to_s3_key(remote: RemoteFile, base_path: str, prefix: str) -> str:
     return key
 
 
-def run_sync(config: SyncConfig, options: Optional[SyncOptions] = None) -> SyncSummary:
+def _create_s3_client(config: SyncConfig):
+    session_kwargs = {}
+    if config.aws_region:
+        session_kwargs["region_name"] = config.aws_region
+    session = boto3.session.Session(**session_kwargs)
+    client_kwargs = {}
+    if S3_ENDPOINT_URL:
+        client_kwargs["endpoint_url"] = S3_ENDPOINT_URL
+    return session.client("s3", **client_kwargs)
+
+
+def build_sync_plan(
+    config: SyncConfig,
+) -> Tuple[str, List[RemoteFile], Dict[str, int]]:
+    """Obtiene la lista de archivos remotos y los objetos existentes en S3."""
+
+    if not config.sftp_host:
+        raise SyncError("Debe especificarse el host del servidor SFTP")
+    if not config.s3_bucket:
+        raise SyncError("Debe especificarse el bucket de destino en S3")
+
+    ssh_client = _connect_ssh(config)
+    logger.info("Conexión SSH establecida con %s", config.sftp_host)
+
+    sftp: Optional[paramiko.SFTPClient] = None
+    try:
+        sftp, remote_files, encoding = _list_remote_with_fallback(ssh_client, config)
+    finally:
+        if sftp is not None:
+            try:
+                sftp.close()
+            except Exception:
+                logger.debug(
+                    "No se pudo cerrar el cliente SFTP tras el listado", exc_info=True
+                )
+        ssh_client.close()
+
+    try:
+        s3_client = _create_s3_client(config)
+        existing_objects = _list_existing_objects(
+            s3_client, config.s3_bucket, config.normalized_prefix()
+        )
+        logger.info(
+            "Se detectaron %d archivos existentes en S3 bajo el prefijo '%s'",
+            len(existing_objects),
+            config.normalized_prefix() or "<sin prefijo>",
+        )
+    except (BotoCoreError, ClientError, NoCredentialsError) as exc:
+        raise SyncError("No se pudo inicializar el cliente de S3") from exc
+
+    return encoding, remote_files, existing_objects
+
+
+def run_sync(
+    config: SyncConfig,
+    options: Optional[SyncOptions] = None,
+    selected_remote_paths: Optional[Sequence[str]] = None,
+) -> SyncSummary:
     options = options or SyncOptions()
     if not config.sftp_host:
         raise SyncError("Debe especificarse el host del servidor SFTP")
@@ -440,14 +525,7 @@ def run_sync(config: SyncConfig, options: Optional[SyncOptions] = None) -> SyncS
     s3_client = None
     if not options.list_only:
         try:
-            session_kwargs = {}
-            if config.aws_region:
-                session_kwargs["region_name"] = config.aws_region
-            session = boto3.session.Session(**session_kwargs)
-            client_kwargs = {}
-            if S3_ENDPOINT_URL:
-                client_kwargs["endpoint_url"] = S3_ENDPOINT_URL
-            s3_client = session.client("s3", **client_kwargs)
+            s3_client = _create_s3_client(config)
             existing_objects = _list_existing_objects(
                 s3_client, config.s3_bucket, config.normalized_prefix()
             )
@@ -472,13 +550,36 @@ def run_sync(config: SyncConfig, options: Optional[SyncOptions] = None) -> SyncS
     base_path = config.remote_base()
     prefix = config.normalized_prefix()
 
+    selection_filter = (
+        set(selected_remote_paths) if selected_remote_paths is not None else None
+    )
+    remaining_selection = set(selection_filter) if selection_filter is not None else set()
+    selected_remote: List[RemoteFile] = []
+    for remote in remote_files:
+        if selection_filter is not None and remote.path not in selection_filter:
+            continue
+        selected_remote.append(remote)
+        if selection_filter is not None:
+            remaining_selection.discard(remote.path)
+
+    if remaining_selection:
+        logger.warning(
+            "Los siguientes archivos seleccionados no se encontraron en el origen: %s",
+            ", ".join(sorted(remaining_selection)),
+        )
+
+    transfer_progress: List[FileProgress] = []
+    total_bytes = 0
+    total_transferred = 0
+
     try:
         if options.list_only:
             for remote in remote_files:
                 logger.info("%s (%.2f MB)", remote.path, remote.size / (1024 * 1024))
         else:
             assert s3_client is not None
-            for remote in remote_files:
+            transfer_candidates: List[Tuple[RemoteFile, str]] = []
+            for remote in selected_remote:
                 key = _remote_to_s3_key(remote, base_path, prefix)
                 if key in existing_objects:
                     skipped += 1
@@ -488,23 +589,49 @@ def run_sync(config: SyncConfig, options: Optional[SyncOptions] = None) -> SyncS
                         existing_objects[key],
                     )
                     continue
+                transfer_candidates.append((remote, key))
+            total_bytes = sum(remote.size for remote, _ in transfer_candidates)
+            for remote, key in transfer_candidates:
+                entry = FileProgress(remote_path=remote.path, s3_key=key, size=remote.size)
+                transfer_progress.append(entry)
                 if options.dry_run:
                     uploaded += 1
+                    entry.transferred = remote.size
+                    total_transferred = min(total_bytes, total_transferred + remote.size)
                     logger.info("[DRY-RUN] Se subiría '%s'", key)
                     continue
                 logger.info("Subiendo '%s' a s3://%s", key, config.s3_bucket)
+
+                def _callback(bytes_amount: int, entry: FileProgress = entry) -> None:
+                    nonlocal total_transferred
+                    entry.transferred = min(
+                        entry.size, entry.transferred + int(bytes_amount)
+                    )
+                    total_transferred = min(
+                        total_bytes, total_transferred + int(bytes_amount)
+                    )
+
                 with sftp.file(remote.path, "rb") as remote_fp:
-                    s3_client.upload_fileobj(remote_fp, config.s3_bucket, key)
+                    s3_client.upload_fileobj(
+                        remote_fp, config.s3_bucket, key, Callback=_callback
+                    )
+                if entry.transferred < entry.size:
+                    delta = entry.size - entry.transferred
+                    entry.transferred = entry.size
+                    total_transferred = min(total_bytes, total_transferred + delta)
                 uploaded += 1
+                existing_objects[key] = remote.size
                 if config.delete_remote_after_upload:
                     sftp.remove(remote.path)
                     deleted += 1
-                    logger.info("Archivo remoto '%s' eliminado tras la carga", remote.path)
+                    logger.info(
+                        "Archivo remoto '%s' eliminado tras la carga", remote.path
+                    )
     finally:
         sftp.close()
         ssh_client.close()
 
-    return SyncSummary(
+    summary = SyncSummary(
         encoding_used=encoding,
         total_remote_files=len(remote_files),
         uploaded_files=uploaded,
@@ -512,7 +639,18 @@ def run_sync(config: SyncConfig, options: Optional[SyncOptions] = None) -> SyncS
         deleted_remote=deleted,
         dry_run=options.dry_run,
         list_only=options.list_only,
+        remote_files=list(remote_files),
+        existing_objects=existing_objects,
+        progress=transfer_progress,
+        total_bytes=total_bytes,
+        total_transferred=total_transferred,
+        selected_files=len(selected_remote),
     )
+    if options.dry_run and total_bytes and total_transferred < total_bytes:
+        summary.total_transferred = total_bytes
+        for entry in summary.progress:
+            entry.transferred = entry.size
+    return summary
 
 
 def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
@@ -595,9 +733,15 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     logger.info("===== Resumen =====")
     logger.info("Codificación utilizada: %s", summary.encoding_used)
     logger.info("Archivos remotos encontrados: %d", summary.total_remote_files)
+    logger.info("Archivos seleccionados para subir: %d", summary.selected_files)
     if not summary.list_only:
         logger.info("Archivos subidos: %d", summary.uploaded_files)
         logger.info("Archivos omitidos por existir: %d", summary.skipped_existing)
+        logger.info(
+            "Bytes transferidos: %d de %d",
+            summary.total_transferred,
+            summary.total_bytes,
+        )
         if config.delete_remote_after_upload:
             logger.info("Archivos remotos eliminados: %d", summary.deleted_remote)
     if summary.dry_run:

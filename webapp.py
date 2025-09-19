@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+import posixpath
+from typing import Any, Dict, List, Optional, Sequence
 
 from flask import Flask, render_template, request
 
 from sync_orion_files import (
+    RemoteFile,
     SyncConfig,
     SyncError,
     SyncOptions,
+    build_sync_plan,
     config_from_env,
     run_sync,
 )
@@ -47,6 +50,87 @@ def _split_csv(value: str) -> List[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _format_size(num_bytes: int) -> str:
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    size = float(num_bytes)
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(size)} {unit}"
+            return f"{size:.2f} {unit}"
+        size /= 1024
+    return f"{size:.2f} PB"
+
+
+def _remote_to_key(remote: RemoteFile, base_path: str, prefix: str) -> str:
+    relative = remote.relative_to(base_path)
+    if relative == ".":
+        relative = posixpath.basename(remote.path)
+    key = relative.replace("\\", "/")
+    if prefix:
+        key = f"{prefix}/{key}"
+    return key
+
+
+def _build_plan_context(
+    config: SyncConfig,
+    encoding: str,
+    remote_files: Sequence[RemoteFile],
+    existing_objects: Dict[str, int],
+) -> Dict[str, Any]:
+    base_path = config.remote_base()
+    prefix = config.normalized_prefix()
+    missing_files: List[Dict[str, Any]] = []
+    total_missing = 0
+
+    for remote in remote_files:
+        key = _remote_to_key(remote, base_path, prefix)
+        entry = {
+            "remote_path": remote.path,
+            "s3_key": key,
+            "size": remote.size,
+            "size_label": _format_size(remote.size),
+        }
+        if key not in existing_objects:
+            missing_files.append(entry)
+            total_missing += remote.size
+
+    existing_list = [
+        {
+            "key": key,
+            "size": size,
+            "size_label": _format_size(size),
+        }
+        for key, size in sorted(existing_objects.items())
+    ]
+
+    return {
+        "encoding": encoding,
+        "remote_total": len(remote_files),
+        "missing_files": missing_files,
+        "missing_count": len(missing_files),
+        "total_missing_bytes": total_missing,
+        "total_missing_label": _format_size(total_missing),
+        "existing_files": existing_list,
+        "existing_count": len(existing_list),
+    }
+
+
+def _apply_selection_to_plan(plan: Dict[str, Any], selected_paths: Sequence[str]) -> None:
+    size_lookup = {item["remote_path"]: item["size"] for item in plan["missing_files"]}
+    selected_total = sum(size_lookup.get(path, 0) for path in selected_paths)
+    plan["selected_total_bytes"] = selected_total
+    plan["selected_total_label"] = _format_size(selected_total)
+
+
+@app.template_filter("human_size")
+def _human_size_filter(value: Any) -> str:
+    try:
+        return _format_size(int(value))
+    except (TypeError, ValueError):
+        return "-"
+
+
 @app.route("/", methods=["GET", "POST"])
 def index():
     defaults = config_from_env()
@@ -71,10 +155,13 @@ def index():
             ),
             "dry_run": False,
             "list_only": False,
+            "operation": "list",
         },
         "summary": None,
         "logs": "",
         "error": None,
+        "plan": None,
+        "selected_files": [],
     }
 
     if request.method == "POST":
@@ -110,15 +197,52 @@ def index():
             list_only=_parse_bool(form.get("list_only")),
         )
 
+        operation = form.get("operation", "list")
+        selected_files = list(form.getlist("selected_files"))
+        context["selected_files"] = selected_files
+        context["form"]["operation"] = operation
+
         handler = _BufferLogHandler()
         sync_logger = logging.getLogger("sync_orion")
         previous_level = sync_logger.level
         sync_logger.setLevel(logging.INFO)
         sync_logger.addHandler(handler)
 
+        plan: Optional[Dict[str, Any]] = None
+
         try:
-            summary = run_sync(config, options)
-            context["summary"] = summary
+            if operation == "sync":
+                if not selected_files:
+                    context["error"] = "Selecciona al menos un archivo para copiar."
+                    encoding, remote_files, existing_objects = build_sync_plan(config)
+                    plan = _build_plan_context(
+                        config, encoding, remote_files, existing_objects
+                    )
+                else:
+                    summary = run_sync(
+                        config, options, selected_remote_paths=selected_files
+                    )
+                    context["summary"] = summary
+                    plan = _build_plan_context(
+                        config,
+                        summary.encoding_used,
+                        summary.remote_files,
+                        summary.existing_objects,
+                    )
+                    selected_files = [
+                        item["remote_path"] for item in plan["missing_files"]
+                    ]
+                    context["selected_files"] = selected_files
+            else:
+                encoding, remote_files, existing_objects = build_sync_plan(config)
+                plan = _build_plan_context(
+                    config, encoding, remote_files, existing_objects
+                )
+                if not selected_files:
+                    selected_files = [
+                        item["remote_path"] for item in plan["missing_files"]
+                    ]
+                    context["selected_files"] = selected_files
         except SyncError as exc:
             context["error"] = str(exc)
         finally:
@@ -143,7 +267,11 @@ def index():
                 ),
                 "dry_run": options.dry_run,
                 "list_only": options.list_only,
+                "operation": operation,
             })
+            if plan is not None:
+                _apply_selection_to_plan(plan, context["selected_files"])
+                context["plan"] = plan
 
     return render_template("index.html", **context)
 
