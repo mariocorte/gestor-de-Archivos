@@ -100,6 +100,7 @@
 
         {% if plan %}
         <section class="transfer-plan" data-total-missing="{{ plan.total_missing_bytes }}">
+          <input type="hidden" name="selected_files_payload" value='{{ selected_files|tojson }}'>
           <h2>Archivos detectados en el origen</h2>
           <p class="hint">
             Codificación utilizada: <strong>{{ plan.encoding }}</strong>. Se encontraron
@@ -246,6 +247,7 @@
         const selectNoneBtn = planSection.querySelector('[data-action="select-none"]');
         const countEl = planSection.querySelector('[data-selected-count]');
         const sizeEl = planSection.querySelector('[data-selected-size]');
+        const payloadInput = planSection.querySelector('input[name="selected_files_payload"]');
 
         const formatSize = (bytes) => {
           const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
@@ -265,10 +267,12 @@
         const updateSelection = () => {
           let total = 0;
           let count = 0;
+          const selectedValues = [];
           for (const checkbox of checkboxes) {
             if (checkbox.checked) {
               count += 1;
               total += Number(checkbox.dataset.size || '0');
+              selectedValues.push(checkbox.value);
             }
           }
           if (countEl) {
@@ -276,6 +280,9 @@
           }
           if (sizeEl) {
             sizeEl.textContent = formatSize(total);
+          }
+          if (payloadInput) {
+            payloadInput.value = JSON.stringify(selectedValues);
           }
         };
 

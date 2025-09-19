@@ -1,6 +1,7 @@
 """Aplicación web para ejecutar ``sync_orion_files`` desde el navegador."""
 from __future__ import annotations
 
+import json
 import logging
 import posixpath
 import traceback
@@ -50,6 +51,18 @@ def _parse_bool(value: Optional[str]) -> bool:
 
 def _split_csv(value: str) -> List[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _parse_selection_payload(raw: str) -> List[str]:
+    if not raw:
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [item for item in payload if isinstance(item, str) and item]
 
 
 def _format_size(num_bytes: int) -> str:
@@ -239,6 +252,9 @@ def index():
 
         operation = form.get("operation", "list")
         selected_files = list(form.getlist("selected_files"))
+        if not selected_files:
+            payload_raw = form.get("selected_files_payload", "")
+            selected_files = _parse_selection_payload(payload_raw)
         context["selected_files"] = selected_files
         context["form"]["operation"] = operation
 
