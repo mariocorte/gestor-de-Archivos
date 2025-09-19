@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import posixpath
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from flask import Flask, render_template, request
 
@@ -12,6 +12,7 @@ from sync_orion_files import (
     SyncConfig,
     SyncError,
     SyncOptions,
+    build_path_variants,
     build_sync_plan,
     config_from_env,
     run_sync,
@@ -113,12 +114,31 @@ def _build_plan_context(
         "total_missing_label": _format_size(total_missing),
         "existing_files": existing_list,
         "existing_count": len(existing_list),
+        "base_path": base_path,
     }
 
 
 def _apply_selection_to_plan(plan: Dict[str, Any], selected_paths: Sequence[str]) -> None:
-    size_lookup = {item["remote_path"]: item["size"] for item in plan["missing_files"]}
-    selected_total = sum(size_lookup.get(path, 0) for path in selected_paths)
+    base_path = plan.get("base_path", "")
+    size_lookup: Dict[str, Tuple[str, int]] = {}
+    for item in plan["missing_files"]:
+        for variant in build_path_variants(item["remote_path"], base_path):
+            size_lookup.setdefault(variant, (item["remote_path"], item["size"]))
+
+    matched_paths: Set[str] = set()
+    selected_total = 0
+    for path in selected_paths:
+        for variant in build_path_variants(path, base_path):
+            entry = size_lookup.get(variant)
+            if entry is None:
+                continue
+            remote_path, size = entry
+            if remote_path in matched_paths:
+                continue
+            matched_paths.add(remote_path)
+            selected_total += size
+            break
+
     plan["selected_total_bytes"] = selected_total
     plan["selected_total_label"] = _format_size(selected_total)
 
