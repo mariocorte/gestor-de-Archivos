@@ -7,7 +7,10 @@ import os
 import posixpath
 import threading
 import traceback
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+import uuid
+from datetime import datetime, timezone
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 try:  # pragma: no cover - dependencias opcionales
     import boto3
@@ -381,7 +384,7 @@ def include_view():
                     "No se pudieron obtener los archivos registrados en la base. "
                     f"Detalle: {exc}"
                 )
-                registered = set()
+                registered = {}
                 fetch_failed = True
 
             if (
@@ -390,7 +393,12 @@ def include_view():
                 and request.form.get("operation") == "incorporate"
             ):
                 try:
-                    existing_matches, added_records, operation_message = _incorporate_files(
+                    (
+                        existing_matches,
+                        added_records,
+                        operation_message,
+                        new_registry,
+                    ) = _incorporate_files(
                         connection, config, registered
                     )
                 except RuntimeError as exc:
@@ -404,12 +412,12 @@ def include_view():
                 else:
                     connection.commit()
                     # Actualizamos el conjunto local para reflejar las inserciones realizadas.
-                    registered.update(added_records)
+                    registered.update(new_registry)
             connection.close()
 
             if not existing_matches and not added_records and registered:
                 # Si no hubo acción reciente, mostramos el listado actual como referencia.
-                existing_matches = sorted(registered)
+                existing_matches = sorted(registered.values())
 
     return render_template(
         "incluir.html",
@@ -456,11 +464,11 @@ def _gestor_table_identifiers() -> Tuple[str, str, Tuple[str, ...]]:
     return schema, table_name, tuple(column_names)
 
 
-def _fetch_registered_files(connection) -> Set[str]:
-    """Obtiene el conjunto de archivos ya registrados en la base gestor."""
+def _fetch_registered_files(connection) -> Dict[Tuple[str, Optional[str]], str]:
+    """Obtiene los archivos ya registrados indexados por nombre y extensión."""
 
     if sql is None:
-        return set()
+        return {}
 
     schema, table_name, columns = _gestor_table_identifiers()
     table_identifier = sql.Identifier(schema, table_name)
@@ -475,27 +483,59 @@ def _fetch_registered_files(connection) -> Set[str]:
         )
         rows = cursor.fetchall()
 
-    registered: Set[str] = set()
+    columns_lower = [column.lower() for column in columns]
+    try:
+        name_index = columns_lower.index("sgddocnombre")
+    except ValueError:
+        name_index = None
+    try:
+        type_index = columns_lower.index("sgddoctipo")
+    except ValueError:
+        type_index = None
+
+    registered: Dict[Tuple[str, Optional[str]], str] = {}
     for row in rows:
         if not row:
             continue
-        entry = _format_registered_entry(row, columns)
+        entry = _format_registered_entry(row, columns, name_index, type_index)
         if entry:
-            registered.add(entry)
+            display, lookup_key = entry
+            registered.setdefault(lookup_key, display)
 
     return registered
 
 
-def _format_registered_entry(row: Sequence[Any], columns: Sequence[str]) -> Optional[str]:
+def _format_registered_entry(
+    row: Sequence[Any],
+    columns: Sequence[str],
+    name_index: Optional[int],
+    type_index: Optional[int],
+) -> Optional[Tuple[str, Tuple[str, Optional[str]]]]:
     if not row:
         return None
+
+    if name_index is not None:
+        raw_name = row[name_index] if name_index < len(row) else None
+        name = str(raw_name).strip() if raw_name is not None else ""
+        if not name:
+            return None
+        extension: Optional[str] = None
+        if type_index is not None and type_index < len(row):
+            extension_raw = row[type_index]
+            if extension_raw not in (None, ""):
+                cleaned = str(extension_raw).strip()
+                extension = cleaned.lower() or None
+        display = name if not extension else f"{name}.{extension}"
+        return display, _build_lookup_key(name, extension)
 
     if len(columns) == 1:
         value = row[0]
         if value is None:
             return None
         text = str(value).strip()
-        return text or None
+        if not text:
+            return None
+        return text, (text.lower(), None)
 
     if len(columns) == 2:
         name = str(row[0]).strip() if row[0] is not None else ""
@@ -503,9 +543,10 @@ def _format_registered_entry(row: Sequence[Any], columns: Sequence[str]) -> Opti
         if not name:
             return None
         if extension_raw in (None, ""):
-            return name
+            return name, _build_lookup_key(name, None)
         extension = str(extension_raw).strip().lower()
-        return f"{name}.{extension}" if extension else name
+        display = f"{name}.{extension}" if extension else name
+        return display, _build_lookup_key(name, extension)
 
     parts: List[str] = []
     for value in row:
@@ -516,46 +557,122 @@ def _format_registered_entry(row: Sequence[Any], columns: Sequence[str]) -> Opti
             parts.append(text)
     if not parts:
         return None
-    return " - ".join(parts)
+    display = " - ".join(parts)
+    return display, (display.lower(), None)
 
 
-def _normalize_key_for_table(
-    key: str, columns: Sequence[str]
-) -> Optional[Tuple[str, Tuple[Any, ...]]]:
-    if not key:
+@dataclasses.dataclass
+class _S3ObjectInfo:
+    key: str
+    size: Optional[int]
+    last_modified: Optional[datetime]
+
+
+@dataclasses.dataclass
+class _PreparedRecord:
+    display: str
+    values: Tuple[Any, ...]
+    lookup_key: Tuple[str, Optional[str]]
+
+
+def _build_lookup_key(name: str, extension: Optional[str]) -> Tuple[str, Optional[str]]:
+    normalized_name = name.strip().lower()
+    normalized_extension = extension.strip().lower() if extension else None
+    return normalized_name, normalized_extension
+
+
+def _size_in_kilobytes(size: Optional[int]) -> Decimal:
+    if size in (None, 0):
+        return Decimal("0.00000")
+    return (Decimal(int(size)) / Decimal(1024)).quantize(
+        Decimal("0.00001"), rounding=ROUND_HALF_UP
+    )
+
+
+def _ensure_utc(value: Optional[datetime]) -> datetime:
+    if value is None:
+        return datetime.now(timezone.utc)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _generate_presigned_url(
+    s3_client,
+    config: SyncConfig,
+    key: str,
+    expires_in: int,
+) -> str:
+    return s3_client.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": config.s3_bucket, "Key": key},
+        ExpiresIn=expires_in,
+    )
+
+
+def _normalize_object_for_table(
+    obj: _S3ObjectInfo,
+    columns: Sequence[str],
+    config: SyncConfig,
+    s3_client,
+    *,
+    expires_in: int = 7 * 24 * 60 * 60,
+) -> Optional[_PreparedRecord]:
+    key = obj.key
+    if not key or key.endswith("/"):
         return None
 
-    if len(columns) == 1:
-        normalized = str(key)
-        return normalized, (normalized,)
+    filename = posixpath.basename(key)
+    name, extension = posixpath.splitext(filename)
+    name = name.strip()
+    if not name:
+        return None
+    cleaned_extension = extension.lstrip(".") or None
+    if cleaned_extension is not None:
+        cleaned_extension = cleaned_extension.lower()
 
-    if len(columns) == 2:
-        if key.endswith("/"):
-            return None
-        filename = posixpath.basename(key)
-        name, extension = posixpath.splitext(filename)
-        name = name.strip()
-        if not name:
-            return None
-        cleaned_extension = extension.lstrip(".") or None
-        if cleaned_extension is not None:
-            cleaned_extension = cleaned_extension.lower()
-        display = name if not cleaned_extension else f"{name}.{cleaned_extension}"
-        return display, (name, cleaned_extension)
+    lookup_key = _build_lookup_key(name, cleaned_extension)
+    display = name if not cleaned_extension else f"{name}.{cleaned_extension}"
 
-    normalized = str(key)
-    values: List[Any] = [normalized]
-    values.extend([None] * (len(columns) - 1))
-    return normalized, tuple(values)
+    needs_url = any(column.lower() == "sgddocurl" for column in columns)
+    url: Optional[str] = None
+    if needs_url:
+        url = _generate_presigned_url(s3_client, config, key, expires_in)
+
+    size_value = _size_in_kilobytes(obj.size)
+    timestamp = _ensure_utc(obj.last_modified)
+    physical_location = f"s3://{config.s3_bucket}/{key}"
+
+    values: List[Any] = []
+    for column in columns:
+        lower = column.lower()
+        if lower == "sgddocid":
+            values.append(str(uuid.uuid4()))
+        elif lower == "sgddocnombre":
+            values.append(name)
+        elif lower == "sgddoctipo":
+            values.append(cleaned_extension)
+        elif lower == "sgddotamano":
+            values.append(size_value)
+        elif lower == "sgddocfecalta":
+            values.append(timestamp)
+        elif lower == "sgddocubfisica":
+            values.append(physical_location)
+        elif lower == "sgddocurl":
+            values.append(url)
+        elif lower == "sgddocusuarioalta":
+            values.append("gestor")
+        elif lower == "sgddocpublico":
+            values.append(True)
+        elif lower == "sgddocapporigen":
+            values.append("gestor")
+        else:
+            values.append(None)
+
+    return _PreparedRecord(display=display, values=tuple(values), lookup_key=lookup_key)
 
 
-def _list_s3_keys(config: SyncConfig) -> List[str]:
-    """Lista los objetos disponibles en S3 según la configuración actual."""
-
-    if not config.s3_bucket:
-        raise RuntimeError(
-            "Debe configurar la variable S3_BUCKET para listar los archivos disponibles."
-        )
+def _create_s3_client(config: SyncConfig):
     if boto3 is None:  # pragma: no cover - entorno sin dependencia opcional
         raise RuntimeError("La librería 'boto3' no está instalada en el entorno actual.")
 
@@ -567,7 +684,18 @@ def _list_s3_keys(config: SyncConfig) -> List[str]:
     client_kwargs: Dict[str, Any] = {}
     if S3_ENDPOINT_URL:
         client_kwargs["endpoint_url"] = S3_ENDPOINT_URL
-    s3_client = session.client("s3", **client_kwargs)
+    return session.client("s3", **client_kwargs)
+
+
+def _list_s3_objects(
+    config: SyncConfig, s3_client
+) -> List[_S3ObjectInfo]:
+    """Lista los objetos disponibles en S3 según la configuración actual."""
+
+    if not config.s3_bucket:
+        raise RuntimeError(
+            "Debe configurar la variable S3_BUCKET para listar los archivos disponibles."
+        )
 
     paginator = s3_client.get_paginator("list_objects_v2")
     request_kwargs: Dict[str, Any] = {"Bucket": config.s3_bucket}
@@ -575,14 +703,23 @@ def _list_s3_keys(config: SyncConfig) -> List[str]:
     if prefix:
         request_kwargs["Prefix"] = prefix
 
-    keys: List[str] = []
+    objects: List[_S3ObjectInfo] = []
     for page in paginator.paginate(**request_kwargs):
         contents = page.get("Contents", [])
         for obj in contents:
             key = obj.get("Key")
-            if key:
-                keys.append(str(key))
-    return keys
+            if not key:
+                continue
+            size = obj.get("Size")
+            last_modified = obj.get("LastModified")
+            objects.append(
+                _S3ObjectInfo(
+                    key=str(key),
+                    size=int(size) if size is not None else None,
+                    last_modified=last_modified,
+                )
+            )
+    return objects
 
 
 def _insert_new_records(connection, values: Iterable[Tuple[Any, ...]]) -> int:
@@ -617,12 +754,19 @@ def _insert_new_records(connection, values: Iterable[Tuple[Any, ...]]) -> int:
 def _incorporate_files(
     connection,
     config: SyncConfig,
-    registered: Set[str],
-) -> Tuple[List[str], List[str], str]:
+    registered: Dict[Tuple[str, Optional[str]], str],
+) -> Tuple[List[str], List[str], str, Dict[Tuple[str, Optional[str]], str]]:
     """Clasifica e inserta los archivos faltantes en la base gestor."""
 
     try:
-        s3_keys = _list_s3_keys(config)
+        s3_client = _create_s3_client(config)
+    except RuntimeError:
+        raise
+    except Exception as exc:  # pragma: no cover - inicialización dependiente del entorno
+        raise RuntimeError("No se pudo inicializar el cliente de S3.") from exc
+
+    try:
+        s3_objects = _list_s3_objects(config, s3_client)
     except (BotoCoreError, ClientError, NoCredentialsError) as exc:
         raise RuntimeError(
             "No se pudo obtener el listado de objetos desde S3. "
@@ -630,24 +774,26 @@ def _incorporate_files(
         ) from exc
 
     _, _, columns = _gestor_table_identifiers()
-    normalized_entries: List[Tuple[str, Tuple[Any, ...]]] = []
-    for key in s3_keys:
-        normalized = _normalize_key_for_table(key, columns)
+    normalized_entries: List[_PreparedRecord] = []
+    for obj in s3_objects:
+        normalized = _normalize_object_for_table(obj, columns, config, s3_client)
         if not normalized:
             continue
         normalized_entries.append(normalized)
 
     already_registered = sorted(
-        display for display, _ in normalized_entries if display in registered
+        registered.get(entry.lookup_key, entry.display)
+        for entry in normalized_entries
+        if entry.lookup_key in registered
     )
     to_insert = [
-        (display, values)
-        for display, values in normalized_entries
-        if display not in registered
+        entry for entry in normalized_entries if entry.lookup_key not in registered
     ]
 
-    inserted_count = _insert_new_records(connection, (values for _, values in to_insert))
-    added_records = sorted(display for display, _ in to_insert)
+    inserted_count = _insert_new_records(
+        connection, (entry.values for entry in to_insert)
+    )
+    added_records = sorted(entry.display for entry in to_insert)
 
     if inserted_count:
         message = (
@@ -656,7 +802,8 @@ def _incorporate_files(
     else:
         message = "No se encontraron archivos nuevos para incorporar."
 
-    return already_registered, added_records, message
+    new_registry = {entry.lookup_key: entry.display for entry in to_insert}
+    return already_registered, added_records, message, new_registry
 
 
 @app.route("/copy", methods=["GET", "POST"])
