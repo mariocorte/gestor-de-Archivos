@@ -207,6 +207,10 @@ def register_documents(
 
             for obj in _iter_s3_objects(config, client):
                 key = obj.get("Key")
+                original_filename = posixpath.basename(str(key)) if key else ""
+                if not original_filename:
+                    continue
+
                 normalized = _normalize_name_and_extension(str(key))
                 if not normalized:
                     continue
@@ -255,7 +259,7 @@ def register_documents(
                         (
                             doc_id,
                             name,
-                            "original",
+                            original_filename,
                             extension,
                             size,
                             timestamp,
