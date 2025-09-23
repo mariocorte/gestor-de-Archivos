@@ -7,9 +7,13 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   </head>
   <body>
-    <main class="container menu-container">
-      <section class="card menu-card">
+    <main class="container">
+      <header class="page-header">
         <h1>Incluir en base gestor</h1>
+        <a href="{{ url_for('menu') }}" class="secondary back-button">Volver al inicio</a>
+      </header>
+
+      <section class="card include-card">
         {% if connection_status %}
         <div class="status-banner">Conectado a la base de datos PostgreSQL.</div>
         {% else %}
@@ -20,7 +24,72 @@
           {% endif %}
         </div>
         {% endif %}
-        <a href="{{ url_for('menu') }}" class="secondary">Volver al inicio</a>
+
+        <p class="intro">
+          Utilizá este asistente para incorporar a la base gestor los archivos detectados en
+          el almacenamiento S3. Se listarán los elementos que ya estaban registrados y los que se
+          agreguen durante la operación actual.
+        </p>
+
+        {% if s3_bucket %}
+        <p class="hint include-hint">
+          Bucket configurado: <strong>{{ s3_bucket }}</strong>
+          {% if s3_prefix %}
+          · Prefijo: <strong>{{ s3_prefix }}</strong>
+          {% else %}
+          · Prefijo: <strong>sin prefijo</strong>
+          {% endif %}
+        </p>
+        {% endif %}
+
+        <form method="post" class="include-actions">
+          <div class="actions">
+            <button type="submit" name="operation" value="incorporate" {% if not connection_status %}disabled{% endif %}>
+              Incorporar a la base
+            </button>
+          </div>
+        </form>
+
+        {% if operation_message %}
+        <div class="status-banner">{{ operation_message }}</div>
+        {% endif %}
+        {% if operation_error %}
+        <div class="status-banner error">{{ operation_error }}</div>
+        {% endif %}
+
+        <div class="include-results">
+          <section class="result-panel">
+            <div class="panel-header">
+              <h2>Archivos ya registrados</h2>
+              <span class="count-badge">{{ existing_matches|length }}</span>
+            </div>
+            {% if existing_matches %}
+            <ul class="file-list compact">
+              {% for item in existing_matches %}
+              <li><span class="file-name">{{ item }}</span></li>
+              {% endfor %}
+            </ul>
+            {% else %}
+            <div class="empty-state">Aún no se registraron archivos para este origen.</div>
+            {% endif %}
+          </section>
+
+          <section class="result-panel">
+            <div class="panel-header">
+              <h2>Agregados en esta ejecución</h2>
+              <span class="count-badge">{{ added_records|length }}</span>
+            </div>
+            {% if added_records %}
+            <ul class="file-list compact">
+              {% for item in added_records %}
+              <li><span class="file-name">{{ item }}</span></li>
+              {% endfor %}
+            </ul>
+            {% else %}
+            <div class="empty-state">Aún no se incorporaron archivos en esta sesión.</div>
+            {% endif %}
+          </section>
+        </div>
       </section>
     </main>
   </body>
