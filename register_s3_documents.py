@@ -255,7 +255,7 @@ def register_documents(
                         (
                             doc_id,
                             name,
-                            name,
+                            "original",
                             extension,
                             size,
                             timestamp,
