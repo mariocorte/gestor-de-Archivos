@@ -55,6 +55,20 @@ Parámetros disponibles:
 - `--list-only`: solo lista los archivos detectados.
 - `--verbose`: muestra información adicional en los logs.
 
+### Registrar archivos existentes en S3
+
+Para generar entradas en la tabla `sgdpjs` con los archivos que ya están en el
+bucket de S3, utiliza el script `register_s3_documents.py`:
+
+```bash
+python register_s3_documents.py --env-file .env --verbose
+```
+
+El script crea una URL firmada con vigencia de 7 días y completa los campos
+indicados en `sgdpjs`. Usa las variables de entorno estándar (`PGHOST`,
+`PGUSER`, etc.) para conectarse a la base de datos; si no están presentes,
+aplicará los valores por defecto utilizados por la aplicación web.
+
 ## Interfaz web
 
 Para lanzar la aplicación web ejecuta:
@@ -76,7 +90,7 @@ El panel mostrará los registros y el resumen de la ejecución.
 Puedes verificar rápidamente que el código es válido ejecutando:
 
 ```bash
-python -m compileall sync_orion_files.py webapp.py
+python -m compileall sync_orion_files.py webapp.py register_s3_documents.py
 ```
 
 Esto compila los módulos y ayuda a detectar errores de sintaxis.
