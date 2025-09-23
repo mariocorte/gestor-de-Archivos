@@ -340,7 +340,7 @@ def include_view():
                 dbname="sgdpjs",
                 user="usrgestor",
                 password="Gestor97",
-                host="10.18.250.251",
+                host="10.18.250.250",
                 port=5432,
                 connect_timeout=5,
             )
