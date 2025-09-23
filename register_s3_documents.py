@@ -7,7 +7,6 @@ import argparse
 import logging
 import os
 import posixpath
-import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
@@ -24,6 +23,7 @@ except ImportError:  # pragma: no cover - ``python-dotenv`` es opcional.
     load_dotenv = None
 
 from sync_orion_files import S3_ENDPOINT_URL, SyncConfig, config_from_env
+from genexus_utils import generate_genexus_guid
 
 
 logger = logging.getLogger("register_s3_documents")
@@ -222,7 +222,7 @@ def register_documents(
                 timestamp = _ensure_utc(obj.get("LastModified"))
                 url = _generate_presigned_url(client, config, str(key), expires_in)
 
-                doc_id = str(uuid.uuid4())
+                doc_id = generate_genexus_guid()
                 physical_location = f"s3://{config.s3_bucket}/{key}"
 
                 logger.debug(
