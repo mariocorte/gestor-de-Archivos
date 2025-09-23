@@ -341,7 +341,7 @@ def menu():
     return render_template("menu.html")
 
 
-@app.route("/incluir")
+@app.route("/incluir", methods=["GET", "POST"])
 def include_view():
     config = config_from_env()
     s3_bucket = config.s3_bucket
