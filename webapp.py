@@ -51,7 +51,7 @@ DEFAULT_GESTOR_COLUMNS: Tuple[str, ...] = (
     "sgddoctipo",
     "sgddoctamano",
     "sgddocfecalta",
-    "sgddocubfisica",
+    "sgddocubicfisica",
     "sgddocurl",
     "sgddocusuarioalta",
     "sgddocpublico",
@@ -676,7 +676,7 @@ def _normalize_object_for_table(
             values.append(size_value)
         elif lower == "sgddocfecalta":
             values.append(timestamp)
-        elif lower == "sgddocubfisica":
+        elif lower in {"sgddocubfisica", "sgddocubicfisica"}:
             values.append(physical_location)
         elif lower == "sgddocurl":
             values.append(url)

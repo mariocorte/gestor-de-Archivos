@@ -243,7 +243,7 @@ def register_documents(
                             sgddoctipo,
                             sgddoctamano,
                             sgddocfecalta,
-                            sgddocubfisica,
+                            sgddocubicfisica,
                             sgddocurl,
                             sgddocusuarioalta,
                             sgddocpublico,
