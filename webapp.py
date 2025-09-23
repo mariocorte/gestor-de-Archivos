@@ -320,6 +320,11 @@ def menu():
     return render_template("menu.html")
 
 
+@app.route("/incluir")
+def include_view():
+    return render_template("incluir.html")
+
+
 @app.route("/copy", methods=["GET", "POST"])
 def copy_view():
     defaults = config_from_env()
