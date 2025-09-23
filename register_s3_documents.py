@@ -241,7 +241,7 @@ def register_documents(
                             sgddocid,
                             sgddocnombre,
                             sgddoctipo,
-                            sgddotamano,
+                            sgddoctamano,
                             sgddocfecalta,
                             sgddocubfisica,
                             sgddocurl,
