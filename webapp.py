@@ -760,6 +760,23 @@ def _insert_new_records(connection, values: Iterable[Tuple[Any, ...]]) -> int:
             "Los datos a insertar no coinciden con la cantidad de columnas configuradas."
         )
 
+    nombre_original_index: Optional[int] = None
+    for index, column in enumerate(columns):
+        if column.lower() == "sgddocnombreoriginal":
+            nombre_original_index = index
+            break
+
+    if nombre_original_index is not None:
+        normalized_prepared: List[Tuple[Any, ...]] = []
+        for row in prepared:
+            if row[nombre_original_index] is None:
+                mutable_row = list(row)
+                mutable_row[nombre_original_index] = "-"
+                normalized_prepared.append(tuple(mutable_row))
+            else:
+                normalized_prepared.append(row)
+        prepared = normalized_prepared
+
     column_identifiers = [sql.Identifier(column) for column in columns]
 
     with connection.cursor() as cursor:
