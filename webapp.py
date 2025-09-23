@@ -681,7 +681,7 @@ def _normalize_object_for_table(
         elif lower == "sgddocnombre":
             values.append(name)
         elif lower == "sgddocnombreoriginal":
-            values.append(name)
+            values.append(filename)
         elif lower == "sgddoctipo":
             values.append(cleaned_extension)
         elif lower == "sgddotamano":
