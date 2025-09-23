@@ -3,19 +3,32 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 import posixpath
 import threading
 import traceback
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+try:  # pragma: no cover - dependencias opcionales
+    import boto3
+except Exception:  # pragma: no cover - boto3 no disponible en el entorno
+    boto3 = None
+
+try:  # pragma: no cover - dependencias opcionales
+    from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
+except Exception:  # pragma: no cover - botocore no disponible
+    BotoCoreError = ClientError = NoCredentialsError = Exception
 from flask import Flask, jsonify, render_template, request
 
 try:
     import psycopg2
-    from psycopg2 import OperationalError
-except Exception:  # pragma: no cover - fallback if driver missing at runtime
+    from psycopg2 import OperationalError, sql
+    from psycopg2.extras import execute_values
+except Exception:  # pragma: no cover - fallback si el driver no está disponible
     psycopg2 = None
     OperationalError = Exception
+    sql = None
+    execute_values = None
 
 from sync_orion_files import (
     FileProgress,
@@ -23,6 +36,7 @@ from sync_orion_files import (
     SyncConfig,
     SyncError,
     SyncOptions,
+    S3_ENDPOINT_URL,
     build_sync_plan,
     config_from_env,
     run_sync,
@@ -329,8 +343,16 @@ def menu():
 
 @app.route("/incluir")
 def include_view():
+    config = config_from_env()
+    s3_bucket = config.s3_bucket
+    s3_prefix = config.normalized_prefix()
+
     connection_status = False
     error_message: Optional[str] = None
+    operation_message: Optional[str] = None
+    operation_error: Optional[str] = None
+    existing_matches: List[str] = []
+    added_records: List[str] = []
 
     if psycopg2 is None:
         error_message = "El controlador de PostgreSQL no está disponible en el entorno."
@@ -346,15 +368,189 @@ def include_view():
             )
         except OperationalError as exc:  # pragma: no cover - depende del entorno
             error_message = str(exc)
+            connection = None
         else:
             connection_status = True
+
+        if connection is not None:
+            fetch_failed = False
+            try:
+                registered = _fetch_registered_files(connection)
+            except Exception as exc:  # pragma: no cover - depende del esquema real
+                operation_error = (
+                    "No se pudieron obtener los archivos registrados en la base. "
+                    f"Detalle: {exc}"
+                )
+                registered = set()
+                fetch_failed = True
+
+            if (
+                not fetch_failed
+                and request.method == "POST"
+                and request.form.get("operation") == "incorporate"
+            ):
+                try:
+                    existing_matches, added_records, operation_message = _incorporate_files(
+                        connection, config, registered
+                    )
+                except RuntimeError as exc:
+                    operation_error = str(exc)
+                except Exception as exc:  # pragma: no cover - errores dependientes del entorno
+                    connection.rollback()
+                    operation_error = (
+                        "Ocurrió un error al incorporar archivos en la base: "
+                        f"{exc}"
+                    )
+                else:
+                    connection.commit()
+                    # Actualizamos el conjunto local para reflejar las inserciones realizadas.
+                    registered.update(added_records)
             connection.close()
+
+            if not existing_matches and not added_records and registered:
+                # Si no hubo acción reciente, mostramos el listado actual como referencia.
+                existing_matches = sorted(registered)
 
     return render_template(
         "incluir.html",
         connection_status=connection_status,
         error_message=error_message,
+        operation_message=operation_message,
+        operation_error=operation_error,
+        existing_matches=existing_matches,
+        added_records=added_records,
+        s3_bucket=s3_bucket,
+        s3_prefix=s3_prefix,
     )
+
+
+def _gestor_table_identifiers() -> Tuple[str, str, str]:
+    """Obtiene el esquema, tabla y columna configurados para la base gestor."""
+
+    table_path = os.environ.get("GESTOR_TABLE", "gestor_archivos")
+    column = os.environ.get("GESTOR_COLUMN", "nombre_archivo")
+    schema = os.environ.get("GESTOR_SCHEMA")
+
+    if schema:
+        table_name = table_path
+    elif "." in table_path:
+        schema, table_name = table_path.split(".", 1)
+    else:
+        schema = "public"
+        table_name = table_path
+
+    return schema, table_name, column
+
+
+def _fetch_registered_files(connection) -> Set[str]:
+    """Obtiene el conjunto de archivos ya registrados en la base gestor."""
+
+    if sql is None:
+        return set()
+
+    schema, table_name, column = _gestor_table_identifiers()
+    table_identifier = sql.Identifier(schema, table_name)
+    column_identifier = sql.Identifier(column)
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            sql.SQL("SELECT {column} FROM {table}").format(
+                column=column_identifier,
+                table=table_identifier,
+            )
+        )
+        rows = cursor.fetchall()
+
+    return {str(row[0]) for row in rows if row and row[0] is not None}
+
+
+def _list_s3_keys(config: SyncConfig) -> List[str]:
+    """Lista los objetos disponibles en S3 según la configuración actual."""
+
+    if not config.s3_bucket:
+        raise RuntimeError(
+            "Debe configurar la variable S3_BUCKET para listar los archivos disponibles."
+        )
+    if boto3 is None:  # pragma: no cover - entorno sin dependencia opcional
+        raise RuntimeError("La librería 'boto3' no está instalada en el entorno actual.")
+
+    session_kwargs: Dict[str, Any] = {}
+    if config.aws_region:
+        session_kwargs["region_name"] = config.aws_region
+    session = boto3.session.Session(**session_kwargs)
+
+    client_kwargs: Dict[str, Any] = {}
+    if S3_ENDPOINT_URL:
+        client_kwargs["endpoint_url"] = S3_ENDPOINT_URL
+    s3_client = session.client("s3", **client_kwargs)
+
+    paginator = s3_client.get_paginator("list_objects_v2")
+    request_kwargs: Dict[str, Any] = {"Bucket": config.s3_bucket}
+    prefix = config.normalized_prefix()
+    if prefix:
+        request_kwargs["Prefix"] = prefix
+
+    keys: List[str] = []
+    for page in paginator.paginate(**request_kwargs):
+        contents = page.get("Contents", [])
+        for obj in contents:
+            key = obj.get("Key")
+            if key:
+                keys.append(str(key))
+    return keys
+
+
+def _insert_new_records(connection, names: Iterable[str]) -> int:
+    """Inserta las rutas indicadas en la tabla configurada de la base gestor."""
+
+    if sql is None or execute_values is None:
+        raise RuntimeError("El controlador de PostgreSQL no está disponible.")
+
+    values = [(name,) for name in names]
+    if not values:
+        return 0
+
+    schema, table_name, column = _gestor_table_identifiers()
+    with connection.cursor() as cursor:
+        query = sql.SQL(
+            "INSERT INTO {table} ({column}) VALUES %s ON CONFLICT DO NOTHING"
+        ).format(
+            table=sql.Identifier(schema, table_name),
+            column=sql.Identifier(column),
+        )
+        execute_values(cursor, query, values)
+    return len(values)
+
+
+def _incorporate_files(
+    connection,
+    config: SyncConfig,
+    registered: Set[str],
+) -> Tuple[List[str], List[str], str]:
+    """Clasifica e inserta los archivos faltantes en la base gestor."""
+
+    try:
+        s3_keys = _list_s3_keys(config)
+    except (BotoCoreError, ClientError, NoCredentialsError) as exc:
+        raise RuntimeError(
+            "No se pudo obtener el listado de objetos desde S3. "
+            "Verifique las credenciales y el bucket configurado."
+        ) from exc
+
+    already_registered = sorted(key for key in s3_keys if key in registered)
+    to_insert = [key for key in s3_keys if key not in registered]
+
+    inserted_count = _insert_new_records(connection, to_insert)
+    added_records = sorted(to_insert)
+
+    if inserted_count:
+        message = (
+            f"Se incorporaron {inserted_count} archivos nuevos a la base gestor."
+        )
+    else:
+        message = "No se encontraron archivos nuevos para incorporar."
+
+    return already_registered, added_records, message
 
 
 @app.route("/copy", methods=["GET", "POST"])

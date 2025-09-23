@@ -198,6 +198,60 @@ button:disabled:hover {
   margin-top: 2rem;
 }
 
+.include-card .intro {
+  margin-top: 0.5rem;
+}
+
+.include-hint {
+  margin-top: 0.5rem;
+}
+
+.include-actions {
+  margin-top: 1rem;
+}
+
+.include-results {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+.result-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+
+.count-badge {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.file-list.compact li {
+  padding: 0.6rem 0.85rem;
+}
+
+.empty-state {
+  border: 1px dashed #cbd2d9;
+  border-radius: 10px;
+  padding: 1rem;
+  text-align: center;
+  color: var(--muted);
+  background: #f5f7fa;
+}
+
 .file-list {
   list-style: none;
   margin: 0;
