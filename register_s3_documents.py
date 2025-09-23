@@ -60,7 +60,7 @@ class DatabaseConfig:
         dbname = (
             os.environ.get("PGDATABASE")
             or os.environ.get("DB_NAME")
-            or "sgdpjs"
+            or "gestor"
         )
         user = os.environ.get("PGUSER") or os.environ.get("DB_USER") or "usrgestor"
         password = (

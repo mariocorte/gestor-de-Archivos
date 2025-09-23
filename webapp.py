@@ -359,7 +359,7 @@ def include_view():
     else:
         try:
             connection = psycopg2.connect(
-                dbname="sgdpjs",
+                dbname="gestor",
                 user="usrgestor",
                 password="Gestor97",
                 host="10.18.250.250",
