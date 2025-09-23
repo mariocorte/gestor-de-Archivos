@@ -10,6 +10,13 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from flask import Flask, jsonify, render_template, request
 
+try:
+    import psycopg2
+    from psycopg2 import OperationalError
+except Exception:  # pragma: no cover - fallback if driver missing at runtime
+    psycopg2 = None
+    OperationalError = Exception
+
 from sync_orion_files import (
     FileProgress,
     RemoteFile,
@@ -322,7 +329,32 @@ def menu():
 
 @app.route("/incluir")
 def include_view():
-    return render_template("incluir.html")
+    connection_status = False
+    error_message: Optional[str] = None
+
+    if psycopg2 is None:
+        error_message = "El controlador de PostgreSQL no está disponible en el entorno."
+    else:
+        try:
+            connection = psycopg2.connect(
+                dbname="sgdpjs",
+                user="usrgestor",
+                password="Gestor97",
+                host="10.18.250.251",
+                port=5432,
+                connect_timeout=5,
+            )
+        except OperationalError as exc:  # pragma: no cover - depende del entorno
+            error_message = str(exc)
+        else:
+            connection_status = True
+            connection.close()
+
+    return render_template(
+        "incluir.html",
+        connection_status=connection_status,
+        error_message=error_message,
+    )
 
 
 @app.route("/copy", methods=["GET", "POST"])

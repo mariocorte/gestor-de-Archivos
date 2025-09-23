@@ -10,7 +10,16 @@
     <main class="container menu-container">
       <section class="card menu-card">
         <h1>Incluir en base gestor</h1>
-        <p class="intro">En construccion</p>
+        {% if connection_status %}
+        <div class="status-banner">Conectado a la base de datos PostgreSQL.</div>
+        {% else %}
+        <div class="status-banner error">
+          No se pudo establecer la conexión con la base de datos.
+          {% if error_message %}
+          <div class="intro">{{ error_message }}</div>
+          {% endif %}
+        </div>
+        {% endif %}
         <a href="{{ url_for('menu') }}" class="secondary">Volver al inicio</a>
       </section>
     </main>
