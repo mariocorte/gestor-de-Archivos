@@ -424,12 +424,26 @@ def include_view():
     )
 
 
-def _gestor_table_identifiers() -> Tuple[str, str, str]:
-    """Obtiene el esquema, tabla y columna configurados para la base gestor."""
+def _gestor_table_identifiers() -> Tuple[str, str, Tuple[str, ...]]:
+    """Obtiene el esquema, tabla y columnas configurados para la base gestor."""
 
-    table_path = os.environ.get("GESTOR_TABLE", "gestor_archivos")
-    column = os.environ.get("GESTOR_COLUMN", "nombre_archivo")
+    table_path = os.environ.get("GESTOR_TABLE", "sgdpjs")
     schema = os.environ.get("GESTOR_SCHEMA")
+
+    columns_raw = os.environ.get("GESTOR_COLUMNS")
+    if columns_raw:
+        column_names = [col.strip() for col in columns_raw.split(",") if col.strip()]
+    else:
+        legacy_column = os.environ.get("GESTOR_COLUMN")
+        if legacy_column:
+            column_names = [col.strip() for col in legacy_column.split(",") if col.strip()]
+        else:
+            column_names = ["sgddocnombre", "sgddoctipo"]
+
+    if not column_names:
+        raise RuntimeError(
+            "No se configuraron columnas válidas para la tabla de gestor."
+        )
 
     if schema:
         table_name = table_path
@@ -439,7 +453,7 @@ def _gestor_table_identifiers() -> Tuple[str, str, str]:
         schema = "public"
         table_name = table_path
 
-    return schema, table_name, column
+    return schema, table_name, tuple(column_names)
 
 
 def _fetch_registered_files(connection) -> Set[str]:
@@ -448,20 +462,91 @@ def _fetch_registered_files(connection) -> Set[str]:
     if sql is None:
         return set()
 
-    schema, table_name, column = _gestor_table_identifiers()
+    schema, table_name, columns = _gestor_table_identifiers()
     table_identifier = sql.Identifier(schema, table_name)
-    column_identifier = sql.Identifier(column)
+    column_identifiers = [sql.Identifier(column) for column in columns]
 
     with connection.cursor() as cursor:
         cursor.execute(
-            sql.SQL("SELECT {column} FROM {table}").format(
-                column=column_identifier,
+            sql.SQL("SELECT {columns} FROM {table}").format(
+                columns=sql.SQL(", ").join(column_identifiers),
                 table=table_identifier,
             )
         )
         rows = cursor.fetchall()
 
-    return {str(row[0]) for row in rows if row and row[0] is not None}
+    registered: Set[str] = set()
+    for row in rows:
+        if not row:
+            continue
+        entry = _format_registered_entry(row, columns)
+        if entry:
+            registered.add(entry)
+
+    return registered
+
+
+def _format_registered_entry(row: Sequence[Any], columns: Sequence[str]) -> Optional[str]:
+    if not row:
+        return None
+
+    if len(columns) == 1:
+        value = row[0]
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    if len(columns) == 2:
+        name = str(row[0]).strip() if row[0] is not None else ""
+        extension_raw = row[1]
+        if not name:
+            return None
+        if extension_raw in (None, ""):
+            return name
+        extension = str(extension_raw).strip().lower()
+        return f"{name}.{extension}" if extension else name
+
+    parts: List[str] = []
+    for value in row:
+        if value in (None, ""):
+            continue
+        text = str(value).strip()
+        if text:
+            parts.append(text)
+    if not parts:
+        return None
+    return " - ".join(parts)
+
+
+def _normalize_key_for_table(
+    key: str, columns: Sequence[str]
+) -> Optional[Tuple[str, Tuple[Any, ...]]]:
+    if not key:
+        return None
+
+    if len(columns) == 1:
+        normalized = str(key)
+        return normalized, (normalized,)
+
+    if len(columns) == 2:
+        if key.endswith("/"):
+            return None
+        filename = posixpath.basename(key)
+        name, extension = posixpath.splitext(filename)
+        name = name.strip()
+        if not name:
+            return None
+        cleaned_extension = extension.lstrip(".") or None
+        if cleaned_extension is not None:
+            cleaned_extension = cleaned_extension.lower()
+        display = name if not cleaned_extension else f"{name}.{cleaned_extension}"
+        return display, (name, cleaned_extension)
+
+    normalized = str(key)
+    values: List[Any] = [normalized]
+    values.extend([None] * (len(columns) - 1))
+    return normalized, tuple(values)
 
 
 def _list_s3_keys(config: SyncConfig) -> List[str]:
@@ -500,26 +585,33 @@ def _list_s3_keys(config: SyncConfig) -> List[str]:
     return keys
 
 
-def _insert_new_records(connection, names: Iterable[str]) -> int:
-    """Inserta las rutas indicadas en la tabla configurada de la base gestor."""
+def _insert_new_records(connection, values: Iterable[Tuple[Any, ...]]) -> int:
+    """Inserta los registros indicados en la tabla configurada de la base gestor."""
 
     if sql is None or execute_values is None:
         raise RuntimeError("El controlador de PostgreSQL no está disponible.")
 
-    values = [(name,) for name in names]
-    if not values:
+    prepared = [tuple(row) for row in values]
+    if not prepared:
         return 0
 
-    schema, table_name, column = _gestor_table_identifiers()
+    schema, table_name, columns = _gestor_table_identifiers()
+    if any(len(row) != len(columns) for row in prepared):
+        raise RuntimeError(
+            "Los datos a insertar no coinciden con la cantidad de columnas configuradas."
+        )
+
+    column_identifiers = [sql.Identifier(column) for column in columns]
+
     with connection.cursor() as cursor:
         query = sql.SQL(
-            "INSERT INTO {table} ({column}) VALUES %s ON CONFLICT DO NOTHING"
+            "INSERT INTO {table} ({columns}) VALUES %s ON CONFLICT DO NOTHING"
         ).format(
             table=sql.Identifier(schema, table_name),
-            column=sql.Identifier(column),
+            columns=sql.SQL(", ").join(column_identifiers),
         )
-        execute_values(cursor, query, values)
-    return len(values)
+        execute_values(cursor, query, prepared)
+    return len(prepared)
 
 
 def _incorporate_files(
@@ -537,11 +629,25 @@ def _incorporate_files(
             "Verifique las credenciales y el bucket configurado."
         ) from exc
 
-    already_registered = sorted(key for key in s3_keys if key in registered)
-    to_insert = [key for key in s3_keys if key not in registered]
+    _, _, columns = _gestor_table_identifiers()
+    normalized_entries: List[Tuple[str, Tuple[Any, ...]]] = []
+    for key in s3_keys:
+        normalized = _normalize_key_for_table(key, columns)
+        if not normalized:
+            continue
+        normalized_entries.append(normalized)
 
-    inserted_count = _insert_new_records(connection, to_insert)
-    added_records = sorted(to_insert)
+    already_registered = sorted(
+        display for display, _ in normalized_entries if display in registered
+    )
+    to_insert = [
+        (display, values)
+        for display, values in normalized_entries
+        if display not in registered
+    ]
+
+    inserted_count = _insert_new_records(connection, (values for _, values in to_insert))
+    added_records = sorted(display for display, _ in to_insert)
 
     if inserted_count:
         message = (
