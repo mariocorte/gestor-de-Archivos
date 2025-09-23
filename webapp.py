@@ -7,7 +7,6 @@ import os
 import posixpath
 import threading
 import traceback
-import uuid
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -44,6 +43,7 @@ from sync_orion_files import (
     config_from_env,
     run_sync,
 )
+from genexus_utils import generate_genexus_guid
 
 app = Flask(__name__)
 app.config.setdefault("SECRET_KEY", "cambia-esta-clave")
@@ -647,7 +647,7 @@ def _normalize_object_for_table(
     for column in columns:
         lower = column.lower()
         if lower == "sgddocid":
-            values.append(str(uuid.uuid4()))
+            values.append(generate_genexus_guid())
         elif lower == "sgddocnombre":
             values.append(name)
         elif lower == "sgddoctipo":
