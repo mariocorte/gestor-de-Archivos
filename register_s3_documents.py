@@ -240,19 +240,21 @@ def register_documents(
                         INSERT INTO sgdpjs (
                             sgddocid,
                             sgddocnombre,
+                            sgddocnombreoriginal,
                             sgddoctipo,
-                            sgddotamano,
+                            sgddoctamano,
                             sgddocfecalta,
-                            sgddocubfisica,
+                            sgddocubicfisica,
                             sgddocurl,
                             sgddocusuarioalta,
                             sgddocpublico,
                             sgddocapporigen
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """,
                         (
                             doc_id,
+                            name,
                             name,
                             extension,
                             size,
