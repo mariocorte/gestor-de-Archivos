@@ -45,6 +45,19 @@ from sync_orion_files import (
 )
 from genexus_utils import generate_genexus_guid
 
+DEFAULT_GESTOR_COLUMNS: Tuple[str, ...] = (
+    "sgddocid",
+    "sgddocnombre",
+    "sgddoctipo",
+    "sgddotamano",
+    "sgddocfecalta",
+    "sgddocubfisica",
+    "sgddocurl",
+    "sgddocusuarioalta",
+    "sgddocpublico",
+    "sgddocapporigen",
+)
+
 app = Flask(__name__)
 app.config.setdefault("SECRET_KEY", "cambia-esta-clave")
 
@@ -446,7 +459,7 @@ def _gestor_table_identifiers() -> Tuple[str, str, Tuple[str, ...]]:
         if legacy_column:
             column_names = [col.strip() for col in legacy_column.split(",") if col.strip()]
         else:
-            column_names = ["sgddocnombre", "sgddoctipo"]
+            column_names = list(DEFAULT_GESTOR_COLUMNS)
 
     if not column_names:
         raise RuntimeError(
@@ -460,6 +473,13 @@ def _gestor_table_identifiers() -> Tuple[str, str, Tuple[str, ...]]:
     else:
         schema = "public"
         table_name = table_path
+
+    normalized_columns = {col.lower() for col in column_names}
+    if table_name.lower() == "sgdpjs" and "sgddocid" not in normalized_columns:
+        raise RuntimeError(
+            "La tabla 'sgdpjs' requiere la columna 'sgddocid'. "
+            "Incluya 'sgddocid' en la variable GESTOR_COLUMNS para generar los identificadores."
+        )
 
     return schema, table_name, tuple(column_names)
 
