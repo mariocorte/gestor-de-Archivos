@@ -49,7 +49,7 @@ DEFAULT_GESTOR_COLUMNS: Tuple[str, ...] = (
     "sgddocid",
     "sgddocnombre",
     "sgddoctipo",
-    "sgddotamano",
+    "sgddoctamano",
     "sgddocfecalta",
     "sgddocubfisica",
     "sgddocurl",
