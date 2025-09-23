@@ -40,6 +40,12 @@ h1 {
   line-height: 1.6;
 }
 
+.build-info {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin: 0 0 1rem;
+}
+
 .card {
   background: var(--card-bg);
   border-radius: 12px;

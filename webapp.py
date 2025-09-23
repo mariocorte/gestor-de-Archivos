@@ -61,6 +61,16 @@ DEFAULT_GESTOR_COLUMNS: Tuple[str, ...] = (
 app = Flask(__name__)
 app.config.setdefault("SECRET_KEY", "cambia-esta-clave")
 
+_COMPILED_AT = datetime.now(timezone.utc).astimezone()
+_COMPILED_AT_LABEL = _COMPILED_AT.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+@app.context_processor
+def _inject_build_metadata() -> Dict[str, str]:
+    """Agrega metadatos globales disponibles en todas las plantillas."""
+
+    return {"build_timestamp_label": _COMPILED_AT_LABEL}
+
 
 class _BufferLogHandler(logging.Handler):
     """Handler en memoria para capturar logs de la sincronización."""
@@ -786,7 +796,14 @@ def _insert_new_records(connection, values: Iterable[Tuple[Any, ...]]) -> int:
             table=sql.Identifier(schema, table_name),
             columns=sql.SQL(", ").join(column_identifiers),
         )
-        execute_values(cursor, query, prepared)
+        try:
+            execute_values(cursor, query, prepared)
+        except Exception as exc:
+            query_text = query.as_string(cursor)
+            raise RuntimeError(
+                "No se pudieron insertar los registros en la base gestor. "
+                f"Consulta ejecutada: {query_text}. Detalle original: {exc}"
+            ) from exc
     return len(prepared)
 
 
