@@ -48,6 +48,7 @@ from genexus_utils import generate_genexus_guid
 DEFAULT_GESTOR_COLUMNS: Tuple[str, ...] = (
     "sgddocid",
     "sgddocnombre",
+    "sgddocnombreoriginal",
     "sgddoctipo",
     "sgddoctamano",
     "sgddocfecalta",

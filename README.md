@@ -40,7 +40,7 @@ Variables principales:
 - `DELETE_REMOTE_AFTER_UPLOAD`: `true/false` para eliminar el archivo remoto tras subirlo.
 - `ALLOWED_EXTENSIONS`: lista separada por comas con extensiones permitidas (por ejemplo `webm` o `mp4,mov`). Por defecto solo se procesan archivos `.webm`. Usa `*` para aceptar cualquier extensión.
 - `GESTOR_TABLE` y `GESTOR_SCHEMA`: identifican la tabla y esquema donde se registrarán los archivos (por defecto `public.sgdpjs`).
-- `GESTOR_COLUMNS`: lista separada por comas con las columnas de la tabla destino. Si no se define se utilizarán automáticamente `sgddocid, sgddocnombre, sgddoctipo, sgddoctamano, sgddocfecalta, sgddocubicfisica, sgddocurl, sgddocusuarioalta, sgddocpublico, sgddocapporigen`. La columna `sgddocid` es obligatoria para generar el identificador GUID requerido por GeneXus.
+- `GESTOR_COLUMNS`: lista separada por comas con las columnas de la tabla destino. Si no se define se utilizarán automáticamente `sgddocid, sgddocnombre, sgddocnombreoriginal, sgddoctipo, sgddoctamano, sgddocfecalta, sgddocubicfisica, sgddocurl, sgddocusuarioalta, sgddocpublico, sgddocapporigen`. La columna `sgddocid` es obligatoria para generar el identificador GUID requerido por GeneXus.
 
 ## Uso por línea de comandos
 
