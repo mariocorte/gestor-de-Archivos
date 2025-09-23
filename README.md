@@ -67,7 +67,8 @@ python register_s3_documents.py --env-file .env --verbose
 El script crea una URL firmada con vigencia de 7 días y completa los campos
 indicados en `sgdpjs`. Usa las variables de entorno estándar (`PGHOST`,
 `PGUSER`, etc.) para conectarse a la base de datos; si no están presentes,
-aplicará los valores por defecto utilizados por la aplicación web.
+aplicará los valores por defecto utilizados por la aplicación web, incluida
+la base `gestor`.
 
 ## Interfaz web
 
