@@ -670,6 +670,8 @@ def _normalize_object_for_table(
             values.append(generate_genexus_guid())
         elif lower == "sgddocnombre":
             values.append(name)
+        elif lower == "sgddocnombreoriginal":
+            values.append(filename)
         elif lower == "sgddoctipo":
             values.append(cleaned_extension)
         elif lower == "sgddotamano":
